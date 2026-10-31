@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{
-    Mat4, Vec3,
+    Mat4, Vec3, Vec4,
     camera::rh::{proj::directx, view::look_at_mat4},
 };
 use wgpu::{
@@ -25,7 +25,7 @@ pub fn create_camera_transform_bind_group_layout(device: &Device) -> BindGroupLa
         label: Some("Camera transform bind group layout"),
         entries: &[BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -41,6 +41,8 @@ pub fn create_camera_transform_bind_group_layout(device: &Device) -> BindGroupLa
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct CameraUniform {
+    // Camera look direction, using Vec4 so bytes are aligned in WGSL
+    pub camera: Vec4,
     // Model-to-world transform (rotation)
     pub model: Mat4,
     // World-to-clip transform (view followed by projection)
@@ -77,6 +79,9 @@ impl CameraTransform {
 
 // Return the CameraUniform at the current time
 pub fn camera_uniform_at_time(run_time: Duration, aspect_ratio: f32) -> CameraUniform {
+    // Static camera for now
+    let camera = Vec4::new(EYE[0], EYE[1], EYE[2], 0.0);
+
     // Turntable spin around the world Y axis. The mesh is already centred and
     // oriented when loaded, so this is the only model transform
     let model = Mat4::from_rotation_y(run_time.as_secs_f32() * ROT_VEL);
@@ -89,6 +94,7 @@ pub fn camera_uniform_at_time(run_time: Duration, aspect_ratio: f32) -> CameraUn
 
     // Return CameraUniform
     CameraUniform {
+        camera,
         model,
         view_proj: projection * view,
     }

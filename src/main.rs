@@ -105,7 +105,7 @@ impl ApplicationHandler for App {
         surface.configure(&device, &surface_config);
 
         // Load the stl vertices into the vertex buffer
-        let vertices = vertices::from_stl("models/utah_teapot_high.stl");
+        let vertices = vertices::from_stl("models/utah_teapot_low.stl");
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mesh vertex buffer"),
             contents: bytemuck::cast_slice(&vertices),
