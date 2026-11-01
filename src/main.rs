@@ -1,3 +1,4 @@
+mod benchmark;
 mod robot;
 #[cfg(feature = "ros2")]
 mod ros;
@@ -30,8 +31,8 @@ use winit::{
 use crate::capture::CAPTURE_SCALE;
 
 use wgpu::{
-    CurrentSurfaceTexture, Device, Instance, Queue, RenderPipeline, RequestAdapterOptions, ShaderModuleDescriptor,
-    ShaderSource, StoreOp, Surface, SurfaceColorSpace, SurfaceConfiguration, TextureView,
+    CurrentSurfaceTexture, Device, Instance, Queue, RenderPipeline, ShaderModuleDescriptor, ShaderSource, StoreOp,
+    Surface, SurfaceColorSpace, SurfaceConfiguration, TextureView,
 };
 
 // Caps the render loop at this many frames per second, 0 means uncapped
@@ -64,12 +65,14 @@ struct App {
     live: robot::SharedState,
     initial_robot: Option<robot::Robot>,
     started_at: Instant,
+    benchmark: Option<benchmark::Benchmark>,
 }
 
 // Holds the wgpu context
 struct WgpuContext {
     robot: Option<robot::RobotScene>,
     robot_generation: u64,
+    robot_scene_revision: u64,
     world_noise: wgpu::BindGroup,
     shadows: shadows::Shadows,
     robot_layout: wgpu::BindGroupLayout,
@@ -119,7 +122,12 @@ impl WgpuContext {
         }
     }
 
-    fn scene_uniform(&self, orbit: &camera::Orbit, aspect: f32, offset: f32) -> (camera::CameraUniform, glam::Vec3) {
+    fn scene_uniform(
+        &self,
+        orbit: &camera::Orbit,
+        aspect: f32,
+        offset: f32,
+    ) -> (camera::CameraUniform, glam::Vec3, glam::Mat4) {
         let camera = camera::camera_uniform(
             orbit,
             self.gui.controls.model_angle,
@@ -130,9 +138,9 @@ impl WgpuContext {
         );
         if let Some(robot) = self.active_robot() {
             let view = robot.view(&self.live.lock().unwrap(), &self.options);
-            (camera.follow(view.camera_motion), view.floor_origin)
+            (camera.follow(view.camera_motion), view.floor_origin, view.alignment)
         } else {
-            (camera, glam::Vec3::new(0., self.mesh.min_y, 0.))
+            (camera, glam::Vec3::new(0., self.mesh.min_y, 0.), glam::Mat4::IDENTITY)
         }
     }
 
@@ -154,18 +162,27 @@ impl WgpuContext {
                 {
                     robot.reset_tracking();
                 }
-                self.options.description_topic = active.description.clone();
-                self.options.joint_topic = active.joints.clone();
-                self.options.fixed_frame = active.fixed_frame.clone();
-                self.options.follow_frame = active.follow_frame.clone();
+                self.options.description_topic.clone_from(&active.description);
+                self.options.joint_topic.clone_from(&active.joints);
+                self.options.fixed_frame.clone_from(&active.fixed_frame);
+                self.options.follow_frame.clone_from(&active.follow_frame);
             }
             if let Some(requested) = &state.requested {
-                self.gui.topics = Some(topics::TopicPanel {
-                    catalog: state.topics.clone(),
+                let panel = self.gui.topics.get_or_insert_with(|| topics::TopicPanel {
+                    catalog: topics::TopicCatalog::default(),
                     requested: requested.clone(),
-                    active: state.active.clone(),
+                    active: None,
                     changed: false,
                 });
+                if panel.catalog != state.topics {
+                    panel.catalog.clone_from(&state.topics);
+                }
+                if &panel.requested != requested {
+                    panel.requested.clone_from(requested);
+                }
+                if panel.active != state.active {
+                    panel.active.clone_from(&state.active);
+                }
             }
         }
         let description = self.live.lock().unwrap().description.take();
@@ -186,6 +203,7 @@ impl WgpuContext {
                         eprintln!("Visual skipped: {warning}");
                     }
                     self.robot = Some(robot::RobotScene::new(robot, &self.device, &self.robot_layout));
+                    self.robot_scene_revision = self.robot_scene_revision.wrapping_add(1);
                 }
                 Err(error) => {
                     self.live.lock().unwrap().error = Some(format!("Description: {error}"));
@@ -236,6 +254,23 @@ impl WgpuContext {
         if !self.gui.shading.shadows {
             return;
         }
+        let casters = if let Some(robot) = self.active_robot() {
+            shadows::Casters::Robot {
+                geometry: self.robot_scene_revision,
+                pose: robot.pose_revision.get(),
+            }
+        } else if self.gui.mode == gui::ViewMode::Mesh {
+            shadows::Casters::Mesh {
+                model: self.loaded_model,
+                angle: self.gui.controls.model_angle.to_bits(),
+            }
+        } else {
+            shadows::Casters::Empty
+        };
+        // Camera and palette changes do not affect the light's depth map.
+        if !self.shadows.needs_render(casters) {
+            return;
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Scene shadow depth pass"),
             color_attachments: &[],
@@ -253,10 +288,9 @@ impl WgpuContext {
         pass.set_bind_group(0, &self.camera_transform.bind_group, &[]);
         pass.set_bind_group(1, &self.shadows.depth_group, &[]);
         if let Some(robot) = self.active_robot() {
-            robot.draw(&mut pass);
+            robot.draw_shadow(&mut pass);
         } else if self.gui.mode == gui::ViewMode::Mesh {
-            pass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
-            pass.draw(0..self.mesh.num_vertices as u32, 0..1);
+            self.mesh.draw_shadow(&mut pass);
         }
     }
 
@@ -310,15 +344,13 @@ impl WgpuContext {
         render_pass.set_pipeline(&self.scene_pipeline);
         render_pass.set_bind_group(1, &self.world_noise, &[]);
         render_pass.set_bind_group(2, &self.shadows.scene_group, &[]);
-        render_pass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
         render_pass.set_bind_group(0, &self.camera_transform.bind_group, &[]);
 
-        // Draw every vertex in the buffer as a non-indexed triangle list (one
-        // instance)
+        // Draw the selected mesh or every robot visual.
         if let Some(robot) = self.active_robot() {
             robot.draw(&mut render_pass);
         } else if self.gui.mode == gui::ViewMode::Mesh {
-            render_pass.draw(0..self.mesh.num_vertices as u32, 0..1);
+            self.mesh.draw(&mut render_pass);
         }
 
         // Draw the floor the same way, with its own pipeline and camera
@@ -398,20 +430,23 @@ impl ApplicationHandler for App {
         // Create a wgpu instance, entry point for the API
         let instance = Instance::default();
 
-        // Request an adapter, which represents a physical GPU, and the device,
-        // which is the handle used to interact it Polling is used here
-        // to block until the adapter and device are ready, as the request_*
-        // methods are asynchronous
-        let adapter_options = RequestAdapterOptions::default();
-        let adapter =
-            pollster::block_on(instance.request_adapter(&adapter_options)).expect("Failed to request adapter");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).expect("Failed to request device");
-
-        // Create a surface for rendering
+        // Match the adapter to the window and honor explicit wgpu overrides.
         let surface = instance
             .create_surface(Arc::clone(self.window.as_ref().unwrap()))
             .expect("Failed to create surface");
+        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
+            &instance,
+            Some(&surface),
+        ))
+        .expect("Failed to request adapter");
+        eprintln!(
+            "Renderer: {} ({:?})",
+            adapter.get_info().name,
+            adapter.get_info().backend
+        );
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).expect("Failed to request device");
+
         let size = self.window.as_ref().unwrap().inner_size();
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps.formats[0];
@@ -422,7 +457,13 @@ impl ApplicationHandler for App {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: surface_caps.present_modes[0],
+            present_mode: if self.options.benchmark_frames.is_some()
+                && surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate)
+            {
+                wgpu::PresentMode::Immediate
+            } else {
+                surface_caps.present_modes[0]
+            },
             alpha_mode: surface_caps.alpha_modes[0],
             color_space: SurfaceColorSpace::Auto,
             view_formats: vec![],
@@ -534,6 +575,7 @@ impl ApplicationHandler for App {
             world_noise,
             shadows,
             robot_generation: 0,
+            robot_scene_revision: 0,
             robot,
             robot_layout: camera_transform_layout,
             options: self.options.clone(),
@@ -654,6 +696,7 @@ impl ApplicationHandler for App {
                 if let Some(wgpu_context) = &mut self.wgpu_context {
                     let window = self.window.as_ref().unwrap();
 
+                    let benchmark_start = self.benchmark.as_ref().map(|_| Instant::now());
                     wgpu_context.update_robot();
                     // Lay out the side menu first, so any palette change is
                     // uploaded in time for this frame's post pass
@@ -749,7 +792,7 @@ impl ApplicationHandler for App {
                     let width = wgpu_context.surface_config.width as f32;
                     let aspect_ratio = width / wgpu_context.surface_config.height as f32;
                     let ndc_offset_x = wgpu_context.gui.menu_width_px / width;
-                    let (camera_uniform, floor_origin) =
+                    let (camera_uniform, floor_origin, alignment) =
                         wgpu_context.scene_uniform(&self.orbit, aspect_ratio, ndc_offset_x);
                     wgpu_context.queue.write_buffer(
                         &wgpu_context.camera_transform.buffer,
@@ -762,6 +805,7 @@ impl ApplicationHandler for App {
                             &camera_uniform,
                             &wgpu_context.live.lock().unwrap(),
                             &wgpu_context.options,
+                            alignment,
                         );
                     }
                     wgpu_context.queue.write_buffer(
@@ -777,6 +821,7 @@ impl ApplicationHandler for App {
                         wgpu_context.gui.shading.shadows,
                     );
 
+                    let prepare_time = benchmark::elapsed(benchmark_start);
                     // Acquire the next frame for rendering
                     let frame = wgpu_context.surface.get_current_texture();
 
@@ -798,6 +843,7 @@ impl ApplicationHandler for App {
                         .texture
                         .create_view(&wgpu::TextureViewDescriptor::default());
 
+                    let encode_start = self.benchmark.as_ref().map(|_| Instant::now());
                     // Start recording GPU commands (nothing actually runs until
                     // we submit this later)
                     let mut encoder = wgpu_context
@@ -823,6 +869,25 @@ impl ApplicationHandler for App {
 
                     // Submit the recorded commands to the GPU queue
                     wgpu_context.queue.submit(Some(encoder.finish()));
+                    let encode_time = benchmark::elapsed(encode_start);
+                    if let Some(benchmark) = &mut self.benchmark {
+                        let gpu_wait_start = Instant::now();
+                        wgpu_context
+                            .device
+                            .poll(wgpu::PollType::wait_indefinitely())
+                            .expect("Benchmark GPU wait failed");
+                        if benchmark.record(
+                            prepare_time,
+                            encode_time,
+                            prepare_time + encode_time + gpu_wait_start.elapsed(),
+                        ) {
+                            eprintln!(
+                                "BENCH shadow_maps_rendered={} (including warmup)",
+                                wgpu_context.shadows.rendered_maps.get()
+                            );
+                            event_loop.exit();
+                        }
+                    }
                     wgpu_context.queue.present(surface_texture);
 
                     // Update the FPS counter in the window title once a second
@@ -957,6 +1022,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ros_connection,
         dragging: false,
         last_cursor: None,
+        benchmark: options.benchmark_frames.map(|n| benchmark::Benchmark::new(n as usize)),
         options,
         live,
         initial_robot,

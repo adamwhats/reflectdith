@@ -4,15 +4,32 @@ use glam::{
     Mat4, Vec3, Vec4,
     camera::rh::{proj::directx, view::look_at_mat4},
 };
+use std::cell::Cell;
 use wgpu::util::DeviceExt;
 
 const MAP_SIZE: u32 = 2048;
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
 struct ShadowUniform {
     light_view_proj: Mat4,
     settings: Vec4,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Casters {
+    Robot { geometry: u64, pose: u64 },
+    Mesh { model: usize, angle: u32 },
+    Empty,
+}
+
+#[derive(Default)]
+struct ShadowCache(Cell<Option<(u64, Casters)>>);
+impl ShadowCache {
+    fn needs_render(&self, light: u64, casters: Casters) -> bool {
+        let stamp = (light, casters);
+        self.0.replace(Some(stamp)) != Some(stamp)
+    }
 }
 
 pub struct Shadows {
@@ -22,6 +39,10 @@ pub struct Shadows {
     pub scene_group: wgpu::BindGroup,
     pub depth_group: wgpu::BindGroup,
     buffer: wgpu::Buffer,
+    last_uniform: Cell<Option<ShadowUniform>>,
+    revision: Cell<u64>,
+    cache: ShadowCache,
+    pub rendered_maps: Cell<u64>,
 }
 impl Shadows {
     pub fn new(device: &wgpu::Device, camera_layout: &wgpu::BindGroupLayout) -> Self {
@@ -164,6 +185,10 @@ impl Shadows {
             scene_group,
             depth_group,
             buffer,
+            last_uniform: Cell::new(None),
+            revision: Cell::new(0),
+            cache: ShadowCache::default(),
+            rendered_maps: Cell::new(0),
         }
     }
 
@@ -176,6 +201,39 @@ impl Shadows {
             light_view_proj: projection * view,
             settings: Vec4::new(if enabled { 1. } else { 0. }, 0., 0., 0.),
         };
-        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&uniform));
+        if self.last_uniform.replace(Some(uniform)) != Some(uniform) {
+            self.revision.set(self.revision.get().wrapping_add(1));
+            queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&uniform));
+        }
+    }
+    pub fn needs_render(&self, casters: Casters) -> bool {
+        let render = self.cache.needs_render(self.revision.get(), casters);
+        if render {
+            self.rendered_maps.set(self.rendered_maps.get() + 1);
+        }
+        render
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shadow_cache_tracks_light_geometry_pose_and_view_changes() {
+        let cache = ShadowCache::default();
+        let robot = Casters::Robot { geometry: 1, pose: 2 };
+        assert!(cache.needs_render(1, robot));
+        assert!(!cache.needs_render(1, robot));
+        assert!(cache.needs_render(2, robot));
+        assert!(cache.needs_render(2, Casters::Robot { geometry: 1, pose: 3 }));
+        assert!(cache.needs_render(2, Casters::Robot { geometry: 2, pose: 3 }));
+        let mesh = Casters::Mesh { model: 0, angle: 0 };
+        assert!(cache.needs_render(2, mesh));
+        assert!(!cache.needs_render(2, mesh));
+        assert!(cache.needs_render(2, Casters::Mesh { model: 0, angle: 1 }));
+        assert!(cache.needs_render(2, Casters::Mesh { model: 1, angle: 1 }));
+        assert!(cache.needs_render(2, Casters::Empty));
+        assert!(cache.needs_render(2, robot));
     }
 }

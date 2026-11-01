@@ -24,8 +24,7 @@ const bayer = array<u32, 64>(
 // Tones for the dithering and the dither cell size, mirrors PostUniform in
 // post.rs
 struct Post {
-    dark: vec4<f32>,
-    light: vec4<f32>,
+    tones: array<vec4<f32>, 16>,
     // x is the size in pixels of each dither cell, y the number of tones
     block: vec4<f32>,
 };
@@ -102,15 +101,6 @@ fn fragment_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f3
     let scaled = luminance * (levels - 1.0);
     let band = min(floor(scaled), levels - 2.0);
     let step = band + select(0.0, 1.0, scaled - band > threshold);
-    let tone = step / (levels - 1.0);
-
-    // Mix the two colours in gamma space, so the steps between tones look even
-    // rather than bunching up at the bright end
-    let encoded = mix(
-        pow(post.dark.rgb, vec3<f32>(1.0 / 2.2)),
-        pow(post.light.rgb, vec3<f32>(1.0 / 2.2)),
-        tone,
-    );
-    let output_colour = pow(encoded, vec3<f32>(2.2));
-    return vec4<f32>(output_colour, 1.0);
+    // The finite palette is gamma-interpolated on the CPU when edited.
+    return vec4<f32>(post.tones[u32(step)].rgb, 1.0);
 }

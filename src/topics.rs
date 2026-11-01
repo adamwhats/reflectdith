@@ -3,7 +3,7 @@
 use crate::robot::LiveState;
 use crate::robot::Options;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TopicCatalog {
     pub descriptions: Vec<String>,
     pub joints: Vec<String>,
@@ -135,6 +135,7 @@ impl TopicPanel {
         } else {
             self.requested.description.clone()
         };
+        let previous_selected = selected.clone();
         let label = if selected.is_empty() {
             "Select robot".into()
         } else {
@@ -159,7 +160,7 @@ impl TopicPanel {
                     }
                 }
             });
-        if !selected.is_empty() && selected != self.requested.description {
+        if !selected.is_empty() && selected != previous_selected {
             self.requested.select_robot(selected);
         }
         if self
@@ -194,6 +195,28 @@ mod tests {
     use super::*;
     use clap::Parser;
     use glam::{Mat4, Vec3};
+    #[test]
+    fn showing_discovered_robot_does_not_reset_explicit_topic_overrides() {
+        let mut requested = TopicSelection::from(&Options::parse_from(["viewer", "--joint-topic", "/custom/joints"]));
+        requested.fixed_frame = Some("custom_world".into());
+        let mut active = requested.clone();
+        active.description = "/m20/robot_description".into();
+        let mut panel = TopicPanel {
+            catalog: TopicCatalog {
+                descriptions: vec![active.description.clone()],
+                ..Default::default()
+            },
+            requested: requested.clone(),
+            active: Some(active),
+            changed: false,
+        };
+        let context = egui::Context::default();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| panel.ui(ui));
+        output.textures_delta.clear();
+        assert_eq!(panel.requested, requested);
+        assert!(!panel.changed);
+    }
+
     #[test]
     fn auto_pairs_robot_topics_and_waits_when_the_robot_is_ambiguous() {
         let request = TopicSelection::from(&Options::parse_from(["viewer"]));

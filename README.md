@@ -167,3 +167,16 @@ meshes are reported and skipped; a robot with no renderable visuals is rejected.
 Prototype limits: monochrome shading (URDF materials/textures ignored), no physics,
 no floating/planar/spherical joints, no timestamp interpolation or TF history. It renders the latest received pose; this is
 interactive visualization, not a deterministic realtime control loop.
+
+## Performance
+
+Robot uniforms are uploaded in a batch, geometry is shared/indexed, and unchanged
+shadow maps are reused. Development builds optimize the rendering and GUI hot
+paths while retaining debug symbols. See [performance notes](docs/performance.md)
+for measurements and tradeoffs.
+
+Use `--benchmark-frames N` to measure N frames after warmup and exit, for example:
+
+```sh
+scripts/ros-viewer --container SIMULATOR -- --benchmark-frames 600
+```

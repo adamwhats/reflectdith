@@ -115,6 +115,8 @@ fn fragment_floor(
     let diffuse_term = max(dot(n, to_light), 0.0);
     let centre_distance = length(vertex_output.world_position.xz - camera.model[3].xz);
     let fade = 1.0 - smoothstep(camera.floor.y, camera.floor.z, centre_distance);
+    // Outside the pool the final palette colour is dark regardless of noise.
+    if fade <= 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     let colour = vec3<f32>(camera.floor.x) * (ambient_amount + light_colour * diffuse_term * surface_visibility(vertex_output.world_position, n)) * fade;
     // World XZ, independent of the camera, robot pose, and screenshot resolution.
     // Wrap signed cells explicitly so the pattern is continuous across the origin.

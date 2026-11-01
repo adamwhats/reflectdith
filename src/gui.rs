@@ -305,7 +305,7 @@ impl Gui {
                         });
                         egui::Grid::new("levels_grid").show(ui, |ui| {
                             ui.label("Levels");
-                            value_slider(ui, &mut *levels, 2..=16, 0, "");
+                            value_slider(ui, &mut *levels, 2..=post::MAX_LEVELS, 0, "");
                             ui.end_row();
                         });
                         if ui.button("Reset palette").clicked() {

@@ -6,6 +6,7 @@ use crate::{
 use clap::Parser;
 use glam::{Mat4, Quat, Vec3};
 use std::{
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -58,6 +59,9 @@ pub struct Options {
     /// Save a screenshot and exit after this many seconds (requires a display).
     #[arg(long)]
     pub capture_after: Option<u64>,
+    /// Measure N frames after 120 warmup frames, waiting for the GPU each frame, then exit.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub benchmark_frames: Option<u32>,
     /// Check URDF and mesh loading without opening a window.
     #[arg(long)]
     pub check_robot: bool,
@@ -82,7 +86,14 @@ pub type SharedState = Arc<Mutex<LiveState>>;
 pub struct Visual {
     link: usize,
     origin: Mat4,
-    pub vertices: Vec<Vertex>,
+    pub vertices: Arc<Vec<Vertex>>,
+}
+
+struct KinematicJoint {
+    parent: usize,
+    child: usize,
+    origin: Mat4,
+    axis: Vec3,
 }
 
 pub struct Robot {
@@ -90,10 +101,13 @@ pub struct Robot {
     pub root: String,
     links: Vec<String>,
     joints: Vec<urdf_rs::Joint>,
+    kinematics: Vec<KinematicJoint>,
+    root_index: usize,
     pub visuals: Vec<Visual>,
     pub warnings: Vec<String>,
     // One display transform for the entire robot, never per-mesh normalization.
     display: Mat4,
+    rest_floor_y: f32,
 }
 
 fn pose(p: &urdf_rs::Pose) -> Mat4 {
@@ -284,11 +298,22 @@ impl Robot {
                     .ok_or("Mimic references a missing joint")?;
             }
         }
+        let mut geometry_cache: HashMap<String, Arc<Vec<Vertex>>> = HashMap::new();
         let mut visuals = Vec::new();
         let mut warnings = Vec::new();
         for (link, l) in urdf.links.iter().enumerate() {
             for visual in &l.visual {
-                match geometry(&visual.geometry, base, options) {
+                let key = format!("{:?}", visual.geometry);
+                let loaded = if let Some(vertices) = geometry_cache.get(&key) {
+                    Ok(vertices.clone())
+                } else {
+                    geometry(&visual.geometry, base, options).map(|vertices| {
+                        let vertices = Arc::new(vertices);
+                        geometry_cache.insert(key, vertices.clone());
+                        vertices
+                    })
+                };
+                match loaded {
                     Ok(vertices) => visuals.push(Visual {
                         link,
                         origin: pose(&visual.origin),
@@ -301,20 +326,34 @@ impl Robot {
         if visuals.is_empty() {
             return Err(format!("No renderable visuals: {}", warnings.join("; ")).into());
         }
+        let link_indices: HashMap<_, _> = links.iter().enumerate().map(|(i, name)| (name.as_str(), i)).collect();
+        let root_index = link_indices[root.as_str()];
+        let kinematics = ordered
+            .iter()
+            .map(|joint| KinematicJoint {
+                parent: link_indices[joint.parent.link.as_str()],
+                child: link_indices[joint.child.link.as_str()],
+                origin: pose(&joint.origin),
+                axis: Vec3::from_array(joint.axis.xyz.0.map(|v| v as f32)).normalize_or_zero(),
+            })
+            .collect();
         let mut robot = Self {
             name: urdf.name,
             root,
             links,
             joints: ordered,
+            kinematics,
+            root_index,
             visuals,
             warnings,
             display: Mat4::IDENTITY,
+            rest_floor_y: 0.,
         };
         let transforms = robot.transforms(&LiveState::default(), None);
         let mut min = Vec3::splat(f32::INFINITY);
         let mut max = Vec3::splat(f32::NEG_INFINITY);
         for (v, t) in robot.visuals.iter().zip(transforms) {
-            for vertex in &v.vertices {
+            for vertex in v.vertices.iter() {
                 let p = t.transform_point3(Vec3::from_array(vertex.position));
                 min = min.min(p);
                 max = max.max(p);
@@ -323,6 +362,7 @@ impl Robot {
         let centre = (min + max) * 0.5;
         let radius = (max - min).length() * 0.5;
         robot.display = Mat4::from_scale(Vec3::splat(1. / radius.max(0.01))) * Mat4::from_translation(-centre);
+        robot.rest_floor_y = robot.display.transform_point3(min).y;
         Ok(robot)
     }
 
@@ -336,54 +376,78 @@ impl Robot {
     }
 
     pub fn transforms(&self, state: &LiveState, fixed_frame: Option<&str>) -> Vec<Mat4> {
+        let mut out = Vec::with_capacity(self.visuals.len());
+        self.write_transforms(state, fixed_frame, &mut Vec::new(), &mut out);
+        out
+    }
+
+    fn write_transforms(
+        &self,
+        state: &LiveState,
+        fixed_frame: Option<&str>,
+        world: &mut Vec<Mat4>,
+        out: &mut Vec<Mat4>,
+    ) {
         let root_pose = fixed_frame
             .and_then(|frame| tf_transform(&state.tf, frame, &self.root))
             .unwrap_or(Mat4::IDENTITY);
-        let mut world = HashMap::from([(self.root.as_str(), root_pose)]);
-        for j in &self.joints {
-            let q = self.joint_position(j, state);
-            let axis = Vec3::from_array(j.axis.xyz.0.map(|x| x as f32)).normalize_or_zero();
-            let motion = match j.joint_type {
+        world.resize(self.links.len(), Mat4::IDENTITY);
+        world[self.root_index] = root_pose;
+        for (joint, k) in self.joints.iter().zip(&self.kinematics) {
+            let q = self.joint_position(joint, state);
+            let motion = match joint.joint_type {
                 urdf_rs::JointType::Revolute | urdf_rs::JointType::Continuous => {
-                    Mat4::from_quat(Quat::from_axis_angle(axis, q))
+                    Mat4::from_quat(Quat::from_axis_angle(k.axis, q))
                 }
-                urdf_rs::JointType::Prismatic => Mat4::from_translation(axis * q),
+                urdf_rs::JointType::Prismatic => Mat4::from_translation(k.axis * q),
                 _ => Mat4::IDENTITY,
             };
-            world.insert(&j.child.link, world[j.parent.link.as_str()] * pose(&j.origin) * motion);
+            world[k.child] = world[k.parent] * k.origin * motion;
         }
-        let ros_to_y_up = Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-        self.visuals
-            .iter()
-            .map(|v| self.display * ros_to_y_up * world[self.links[v.link].as_str()] * v.origin)
-            .collect()
+        let basis = self.display * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        out.clear();
+        out.extend(self.visuals.iter().map(|v| basis * world[v.link] * v.origin));
     }
 }
 
 pub fn tf_transform(tf: &HashMap<String, (String, Mat4)>, fixed: &str, target: &str) -> Option<Mat4> {
-    fn ancestors(tf: &HashMap<String, (String, Mat4)>, frame: &str) -> HashMap<String, Mat4> {
-        let mut out = HashMap::new();
-        let mut frame = frame;
-        let mut transform = Mat4::IDENTITY;
-        loop {
-            if out.insert(frame.to_string(), transform).is_some() {
-                break;
-            }
-            let Some((parent, t)) = tf.get(frame) else {
-                break;
+    fn depth<'a>(tf: &'a HashMap<String, (String, Mat4)>, mut frame: &'a str) -> Option<(&'a str, usize)> {
+        for depth in 0..=tf.len() {
+            let Some((parent, _)) = tf.get(frame) else {
+                return Some((frame, depth));
             };
-            transform = *t * transform;
             frame = parent;
         }
-        out
+        None // Cycle: no valid transform can be obtained.
     }
-    let fixed = ancestors(tf, fixed.trim_start_matches('/'));
-    for (common, t) in ancestors(tf, target.trim_start_matches('/')) {
-        if let Some(f) = fixed.get(&common) {
-            return Some(f.inverse() * t);
+    let mut fixed = fixed.trim_start_matches('/');
+    let mut target = target.trim_start_matches('/');
+    if fixed == target {
+        return Some(Mat4::IDENTITY);
+    }
+    let (fixed_root, mut fixed_depth) = depth(tf, fixed)?;
+    let (target_root, mut target_depth) = depth(tf, target)?;
+    if fixed_root != target_root {
+        return None;
+    }
+    let mut from_fixed = Mat4::IDENTITY;
+    let mut from_target = Mat4::IDENTITY;
+    // A TF tree has a single parent per frame. Meet at the lowest common
+    // ancestor without allocating maps or cloning frame names each render.
+    while fixed != target {
+        if fixed_depth >= target_depth {
+            let (parent, transform) = tf.get(fixed)?;
+            from_fixed = *transform * from_fixed;
+            fixed = parent;
+            fixed_depth -= 1;
+        } else {
+            let (parent, transform) = tf.get(target)?;
+            from_target = *transform * from_target;
+            target = parent;
+            target_depth -= 1;
         }
     }
-    None
+    Some(from_fixed.inverse() * from_target)
 }
 
 pub struct RobotView {
@@ -438,60 +502,125 @@ pub fn follow_frame(robot: &Robot, options: &Options) -> String {
 }
 
 pub struct RobotDraw {
-    mesh: vertices::Mesh,
-    transform: camera::CameraTransform,
+    mesh: Arc<vertices::Mesh>,
+    transform: wgpu::BindGroup,
 }
+struct RobotFrame {
+    world: Vec<Mat4>,
+    models: Vec<Mat4>,
+    last_models: Vec<Mat4>,
+    uniforms: Vec<u8>,
+}
+
 pub struct RobotScene {
     pub robot: Robot,
     draws: Vec<RobotDraw>,
     pub floor_y: f32,
     tracking: ViewTracking,
+    uniform_buffer: wgpu::Buffer,
+    uniform_stride: usize,
+    frame: RefCell<RobotFrame>,
+    pub pose_revision: Cell<u64>,
 }
 impl RobotScene {
     pub fn new(robot: Robot, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Self {
-        let transforms = robot.transforms(&LiveState::default(), None);
-        let floor_y = robot
-            .visuals
-            .iter()
-            .zip(transforms)
-            .flat_map(|(v, t)| {
-                v.vertices
-                    .iter()
-                    .map(move |p| t.transform_point3(Vec3::from_array(p.position)).y)
-            })
-            .fold(f32::INFINITY, f32::min);
+        let floor_y = robot.rest_floor_y;
+        // All visual uniforms share one allocation and one queue upload.
+        let uniform_size = std::mem::size_of::<camera::CameraUniform>();
+        let alignment = device.limits().min_uniform_buffer_offset_alignment as usize;
+        let uniform_stride = uniform_size.div_ceil(alignment) * alignment;
+        let uniforms = vec![0; uniform_stride * robot.visuals.len()];
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Robot visual uniforms"),
+            size: uniforms.len() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut meshes = HashMap::new();
         let draws = robot
             .visuals
             .iter()
-            .map(|v| RobotDraw {
-                mesh: vertices::upload(device, &v.vertices),
-                transform: camera::CameraTransform::new(
-                    device,
+            .enumerate()
+            .map(|(index, v)| RobotDraw {
+                mesh: meshes
+                    .entry(Arc::as_ptr(&v.vertices))
+                    .or_insert_with(|| Arc::new(vertices::upload(device, &v.vertices)))
+                    .clone(),
+                transform: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Robot visual transform"),
                     layout,
-                    &[0; std::mem::size_of::<camera::CameraUniform>()],
-                ),
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &uniform_buffer,
+                            offset: (index * uniform_stride) as u64,
+                            size: std::num::NonZeroU64::new(uniform_size as u64),
+                        }),
+                    }],
+                }),
             })
             .collect();
+        let unshared_bytes = robot
+            .visuals
+            .iter()
+            .map(|v| v.vertices.len() * std::mem::size_of::<Vertex>())
+            .sum::<usize>();
+        eprintln!(
+            "Robot geometry: {} unique meshes, {:.2} MiB on GPU (unshared: {:.2} MiB)",
+            meshes.len(),
+            meshes.values().map(|m| m.gpu_bytes()).sum::<u64>() as f64 / 1048576.,
+            unshared_bytes as f64 / 1048576.
+        );
         Self {
             robot,
             draws,
             floor_y,
             tracking: ViewTracking::default(),
+            uniform_buffer,
+            uniform_stride,
+            frame: RefCell::new(RobotFrame {
+                world: Vec::new(),
+                models: Vec::new(),
+                last_models: Vec::new(),
+                uniforms,
+            }),
+            pose_revision: Cell::new(0),
         }
     }
-    pub fn update(&self, queue: &wgpu::Queue, camera: &camera::CameraUniform, state: &LiveState, options: &Options) {
-        let alignment = self.view(state, options).alignment;
-        for (draw, model) in self
-            .draws
-            .iter()
-            .zip(self.robot.transforms(state, options.fixed_frame.as_deref()))
-        {
+    pub fn update(
+        &self,
+        queue: &wgpu::Queue,
+        camera: &camera::CameraUniform,
+        state: &LiveState,
+        options: &Options,
+        alignment: Mat4,
+    ) {
+        let mut frame = self.frame.borrow_mut();
+        let RobotFrame {
+            world,
+            models,
+            last_models,
+            uniforms,
+        } = &mut *frame;
+        self.robot
+            .write_transforms(state, options.fixed_frame.as_deref(), world, models);
+        for model in models.iter_mut() {
+            *model = alignment * *model;
+        }
+        if models != last_models {
+            self.pose_revision.set(self.pose_revision.get().wrapping_add(1));
+            last_models.clone_from(models);
+        }
+        for (index, model) in models.iter().enumerate() {
             let uniform = camera::CameraUniform {
-                model: alignment * model,
+                model: *model,
                 ..*camera
             };
-            queue.write_buffer(&draw.transform.buffer, 0, bytemuck::bytes_of(&uniform));
+            let bytes = bytemuck::bytes_of(&uniform);
+            let offset = index * self.uniform_stride;
+            uniforms[offset..offset + bytes.len()].copy_from_slice(bytes);
         }
+        queue.write_buffer(&self.uniform_buffer, 0, uniforms);
     }
     pub fn reset_tracking(&mut self) {
         self.tracking = ViewTracking::default();
@@ -503,9 +632,14 @@ impl RobotScene {
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         for draw in &self.draws {
-            pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
-            pass.set_bind_group(0, &draw.transform.bind_group, &[]);
-            pass.draw(0..draw.mesh.num_vertices as u32, 0..1);
+            pass.set_bind_group(0, &draw.transform, &[]);
+            draw.mesh.draw(pass);
+        }
+    }
+    pub fn draw_shadow<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        for draw in &self.draws {
+            pass.set_bind_group(0, &draw.transform, &[]);
+            draw.mesh.draw_shadow(pass);
         }
     }
 }
@@ -634,6 +768,41 @@ mod tests {
         let bobbed = tracking.sample(&robot, &state, &options, -100.);
         assert!(bobbed.camera_motion.abs_diff_eq(moved.camera_motion, 1e-5));
         assert!(bobbed.floor_origin.abs_diff_eq(moved.floor_origin, 1e-5));
+    }
+
+    #[test]
+    fn shared_geometry_keeps_independent_visual_origins() {
+        let xml = r#"<robot name="shared"><link name="base"><visual><geometry><box size="1 1 1"/></geometry></visual><visual><origin xyz="3 0 0"/><geometry><box size="1 1 1"/></geometry></visual></link></robot>"#;
+        let robot = Robot::load(xml, Path::new("."), &options()).unwrap();
+        assert!(Arc::ptr_eq(&robot.visuals[0].vertices, &robot.visuals[1].vertices));
+        assert_eq!(robot.visuals[0].origin, Mat4::IDENTITY);
+        assert_eq!(robot.visuals[1].origin.w_axis.truncate(), Vec3::X * 3.);
+        let models = robot.transforms(&LiveState::default(), None);
+        assert_ne!(models[0], models[1]);
+    }
+
+    #[test]
+    fn tf_lookup_handles_ancestors_siblings_disconnected_frames_and_cycles() {
+        let mut tf = HashMap::new();
+        tf.insert("a".into(), ("root".into(), Mat4::from_rotation_z(0.4)));
+        tf.insert("b".into(), ("a".into(), Mat4::from_translation(Vec3::X)));
+        tf.insert("c".into(), ("root".into(), Mat4::from_translation(Vec3::Y)));
+        let root_to_b = tf["a"].1 * tf["b"].1;
+        assert!(tf_transform(&tf, "/root", "/b").unwrap().abs_diff_eq(root_to_b, 1e-6));
+        assert!(
+            tf_transform(&tf, "b", "root")
+                .unwrap()
+                .abs_diff_eq(root_to_b.inverse(), 1e-6)
+        );
+        assert!(
+            tf_transform(&tf, "c", "b")
+                .unwrap()
+                .abs_diff_eq(tf["c"].1.inverse() * root_to_b, 1e-6)
+        );
+        assert!(tf_transform(&tf, "missing", "b").is_none());
+        assert_eq!(tf_transform(&tf, "root", "root"), Some(Mat4::IDENTITY));
+        tf.insert("root".into(), ("b".into(), Mat4::IDENTITY));
+        assert!(tf_transform(&tf, "a", "b").is_none());
     }
 
     #[test]

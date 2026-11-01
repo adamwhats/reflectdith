@@ -90,7 +90,7 @@ impl WgpuContext {
         // aspect ratio is the window's. The dither cells are scale pixels wide
         // The caller writes the window's values again afterwards
         let aspect_ratio = window_width as f32 / window_height as f32;
-        let (camera_uniform, floor_origin) = self.scene_uniform(orbit, aspect_ratio, 0.0);
+        let (camera_uniform, floor_origin, alignment) = self.scene_uniform(orbit, aspect_ratio, 0.0);
         queue.write_buffer(&self.camera_transform.buffer, 0, bytemuck::bytes_of(&camera_uniform));
         queue.write_buffer(
             &self.floor_camera_transform.buffer,
@@ -98,7 +98,13 @@ impl WgpuContext {
             bytemuck::bytes_of(&camera_uniform.for_floor_at(floor_origin)),
         );
         if let Some(robot) = self.active_robot() {
-            robot.update(queue, &camera_uniform, &self.live.lock().unwrap(), &self.options);
+            robot.update(
+                queue,
+                &camera_uniform,
+                &self.live.lock().unwrap(),
+                &self.options,
+                alignment,
+            );
         }
         self.shadows
             .update(queue, &camera_uniform, floor_origin, self.gui.shading.shadows);

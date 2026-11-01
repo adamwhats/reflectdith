@@ -58,7 +58,7 @@ rustup_dir="${RUSTUP_HOME:-$HOME/.rustup}"
 [[ -x "$cargo_dir/bin/cargo" && -d "$rustup_dir/toolchains" ]] || { echo 'Host rustup toolchain not found' >&2; exit 1; }
 args=(--rm --init --user "$(id -u):$(id -g)" --workdir /viewer
   --env HOME=/tmp --env CARGO_HOME=/cargo --env RUSTUP_HOME=/rustup
-  --env CARGO_BUILD_JOBS=4
+  --env CARGO_BUILD_JOBS=4 --env WGPU_ADAPTER_NAME --env WGPU_POWER_PREF
   --volume "$repo_dir:/viewer" --volume "$cargo_dir:/cargo" --volume "$rustup_dir:/rustup:ro")
 ros_env=()
 if [[ -n "$container" ]]; then

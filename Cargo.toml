@@ -30,3 +30,17 @@ opt-level = 2
 
 [profile.dev.package.roxmltree]
 opt-level = 2
+
+# The launcher runs development builds. Optimize the render/UI hot paths while
+# retaining debug symbols and keeping dependency rebuilds limited.
+[profile.dev.package.reflecdith]
+opt-level = 1
+
+[profile.dev.package.egui]
+opt-level = 2
+
+[profile.dev.package.epaint]
+opt-level = 2
+
+[profile.dev.package.wgpu-core]
+opt-level = 1

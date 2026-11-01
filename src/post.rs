@@ -1,4 +1,5 @@
 use crate::blue_noise;
+use std::cell::Cell;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec3, Vec4};
@@ -10,7 +11,7 @@ use wgpu::{
 
 // The tones the dither chooses between, in linear RGB. Edited from the
 // side menu in gui.rs
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Palette {
     pub dark: [f32; 3],
     pub light: [f32; 3],
@@ -19,6 +20,7 @@ pub struct Palette {
 // How many tones the dither quantises to, evenly spaced from the dark colour
 // to the light colour. 2 is just the two colours
 pub const DEFAULT_LEVELS: u32 = 3;
+pub const MAX_LEVELS: u32 = 16;
 
 impl Default for Palette {
     fn default() -> Self {
@@ -36,8 +38,7 @@ impl Default for Palette {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PostUniform {
     // Using Vec4 so bytes are aligned in WGSL, w is unused
-    dark: Vec4,
-    light: Vec4,
+    tones: [Vec4; MAX_LEVELS as usize],
     // x is the size in pixels of each dither cell, which is 1 on screen and the
     // scale factor when capturing at a higher resolution so the dither keeps
     // the same look. y is the number of tones. The rest is unused
@@ -46,9 +47,16 @@ struct PostUniform {
 
 impl PostUniform {
     fn new(palette: &Palette, block_size: u32, levels: u32) -> Self {
+        let levels = levels.clamp(2, MAX_LEVELS);
+        let dark = Vec3::from(palette.dark).powf(1. / 2.2);
+        let light = Vec3::from(palette.light).powf(1. / 2.2);
+        let mut tones = [Vec4::ZERO; MAX_LEVELS as usize];
+        for (index, colour) in tones.iter_mut().take(levels as usize).enumerate() {
+            let tone = index as f32 / (levels - 1) as f32;
+            *colour = (dark * (1. - tone) + light * tone).powf(2.2).extend(0.);
+        }
         Self {
-            dark: Vec3::from(palette.dark).extend(0.0),
-            light: Vec3::from(palette.light).extend(0.0),
+            tones,
             block: Vec4::new(block_size as f32, levels as f32, 0.0, 0.0),
         }
     }
@@ -63,6 +71,7 @@ pub struct PostProcess {
     pub bind_group: BindGroup,
     // Uniform buffer holding the dither palette
     palette_buffer: Buffer,
+    last_palette: Cell<(Palette, u32, u32)>,
     // The blue noise texture used as the dither threshold for the floor
     noise_view: TextureView,
 }
@@ -91,6 +100,7 @@ impl PostProcess {
             bind_group_layout,
             bind_group,
             palette_buffer,
+            last_palette: Cell::new((Palette::default(), 1, DEFAULT_LEVELS)),
             noise_view,
         }
     }
@@ -139,6 +149,9 @@ impl PostProcess {
     // Upload the palette, dither cell size and number of tones, which take
     // effect at the next queue submit
     pub fn write_uniform(&self, queue: &Queue, palette: &Palette, block_size: u32, levels: u32) {
+        if self.last_palette.replace((*palette, block_size, levels)) == (*palette, block_size, levels) {
+            return;
+        }
         queue.write_buffer(
             &self.palette_buffer,
             0,
@@ -280,4 +293,37 @@ fn create_pipeline(
     };
 
     device.create_render_pipeline(&render_pipeline_descriptor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn precomputed_palette_keeps_endpoints_and_gamma_spaced_midtones() {
+        let palette = Palette::default();
+        for levels in 2..=MAX_LEVELS {
+            let uniform = PostUniform::new(&palette, 2, levels);
+            assert_eq!(uniform.block, Vec4::new(2., levels as f32, 0., 0.));
+            assert!(uniform.tones[0].truncate().abs_diff_eq(Vec3::from(palette.dark), 1e-6));
+            assert!(
+                uniform.tones[levels as usize - 1]
+                    .truncate()
+                    .abs_diff_eq(Vec3::from(palette.light), 1e-6)
+            );
+        }
+        let uniform = PostUniform::new(
+            &Palette {
+                dark: [0.; 3],
+                light: [1.; 3],
+            },
+            1,
+            3,
+        );
+        assert!(
+            uniform.tones[1]
+                .truncate()
+                .abs_diff_eq(Vec3::splat(0.5_f32.powf(2.2)), 1e-6)
+        );
+    }
 }
