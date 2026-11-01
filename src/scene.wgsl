@@ -3,8 +3,6 @@ const light_colour: vec3<f32> = vec3<f32>(1.0, 1.0, 1.0);
 // Grey, as the colour comes from the palette in the post pass
 const albedo_colour: vec3<f32> = vec3<f32>(0.8, 0.8, 0.8);
 const ambient_amount: f32 = 0.1;
-const shininess: f32 = 32;
-const specular_strength: f32 = 0.5;
 
 // Camera uniform, mirrors CameraUniform in camera.rs
 // model takes model space to world space
@@ -13,6 +11,11 @@ struct Camera {
     camera: vec4<f32>,
     // Points from the surface towards the light, in world space
     to_light: vec4<f32>,
+    // x is the specular shininess, y the specular strength
+    specular: vec4<f32>,
+    // x is the floor brightness, y and z the distances from the centre where it
+    // starts and finishes fading to black
+    floor: vec4<f32>,
     model: mat4x4<f32>,
     view_proj: mat4x4<f32>,
 };
@@ -63,9 +66,27 @@ fn fragment_main(
     let diffuse_term = max(dot(n, to_light), 0.0);
     let diffuse = albedo_colour * (ambient_amount + light_colour * diffuse_term);
     // Specular lighting
-    let specular_term = pow(max(dot(n, half), 0.0), shininess);
-    let specular = light_colour * specular_strength * specular_term;
+    let specular_term = pow(max(dot(n, half), 0.0), camera.specular.x);
+    let specular = light_colour * camera.specular.y * specular_term;
     // Sum for final colour
     let colour = diffuse + specular;
     return vec4<f32>(colour, 1.0);
+}
+
+// Fragment shader entry point for the floor, which is lit like the mesh, then
+// fades to black between two distances from the centre, leaving a pool of light
+// under the mesh
+// The alpha is 0, where the mesh writes 1, which tells the post pass to dither
+// the floor with blue noise instead of the Bayer matrix
+@fragment
+fn fragment_floor(
+    vertex_output: VertexOutput,
+) -> @location(0) vec4<f32> {
+    let to_light = normalize(camera.to_light.xyz);
+    let n = normalize(vertex_output.normal);
+    let diffuse_term = max(dot(n, to_light), 0.0);
+    let centre_distance = length(vertex_output.world_position.xz);
+    let fade = 1.0 - smoothstep(camera.floor.y, camera.floor.z, centre_distance);
+    let colour = vec3<f32>(camera.floor.x) * (ambient_amount + light_colour * diffuse_term) * fade;
+    return vec4<f32>(colour, 0.0);
 }
