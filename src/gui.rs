@@ -73,6 +73,8 @@ pub struct Gui {
     // The number of tones the dither quantises to, from the dark colour to the
     // light colour
     pub levels: u32,
+    pub bayer_density: f32,
+    pub shared_grid: bool,
     // Animation state; the menu exposes light speed
     pub controls: SceneControls,
     // The specular and floor settings being edited
@@ -159,6 +161,8 @@ impl Gui {
             textures_to_free: Vec::new(),
             palette: Palette::default(),
             levels: post::DEFAULT_LEVELS,
+            bayer_density: post::DEFAULT_BAYER_DENSITY,
+            shared_grid: true,
             controls: SceneControls::default(),
             shading: camera::Shading::default(),
             models,
@@ -191,6 +195,8 @@ impl Gui {
         let input = self.state.take_egui_input(window);
         let palette = &mut self.palette;
         let levels = &mut self.levels;
+        let bayer_density = &mut self.bayer_density;
+        let shared_grid = &mut self.shared_grid;
         let controls = &mut self.controls;
         let shading = &mut self.shading;
         let models = &self.models;
@@ -217,58 +223,57 @@ impl Gui {
                             *visible = false;
                         }
                         ui.separator();
+                        ui.heading("Scene");
                         ui.horizontal(|ui| {
                             ui.label("View");
                             ui.selectable_value(mode, ViewMode::Mesh, "Mesh");
                             ui.selectable_value(mode, ViewMode::Robot, "Robot");
                         });
-                        ui.separator();
                         if *mode == ViewMode::Robot {
                             if let Some(topics) = topics {
                                 topics.ui(ui);
                             }
                             if let Some(status) = robot_status {
-                                ui.label(status);
+                                ui.add(egui::Label::new(status.replace('\n', " · ")).truncate())
+                                    .on_hover_text(status);
                             }
-                        }
-                        // Each section is a grid with the labels in one column and
-                        // the controls in the next, so they line up
-                        if *mode == ViewMode::Mesh {
-                            ui.heading("Model");
-                            egui::Grid::new("model_grid").show(ui, |ui| {
+                        } else {
+                            ui.horizontal(|ui| {
                                 ui.label("Mesh");
                                 egui::ComboBox::from_id_salt("model_select")
+                                    .width(200.)
+                                    .truncate()
                                     .selected_text(model_name(&models[*selected_model]))
                                     .show_ui(ui, |ui| {
                                         for (index, model) in models.iter().enumerate() {
                                             ui.selectable_value(selected_model, index, model_name(model));
                                         }
                                     });
-                                ui.end_row();
                             });
-                            ui.separator();
-                        }
-                        ui.heading("Lighting");
-                        ui.checkbox(&mut shading.shadows, "Shadows");
-                        egui::Grid::new("light_grid").show(ui, |ui| {
-                            ui.label("Light speed");
-                            value_slider(ui, &mut controls.light_speed, -180.0..=180.0, 0, "°/s");
-                            ui.end_row();
-                        });
-                        if ui.button("Reset light").clicked() {
-                            controls.reset_light();
                         }
                         ui.separator();
 
-                        ui.heading("Specular");
-                        egui::Grid::new("specular_grid").show(ui, |ui| {
+                        ui.heading("Lighting");
+                        ui.checkbox(&mut shading.shadows, "Shadows");
+                        egui::Grid::new("light_grid").show(ui, |ui| {
+                            ui.label("Rotation")
+                                .on_hover_text("World light rotation; zero keeps the light stationary.");
+                            value_slider(ui, &mut controls.light_speed, -180.0..=180.0, 0, "°/s");
+                            ui.end_row();
                             ui.label("Shininess");
                             value_slider(ui, &mut shading.shininess, 1.0..=64.0, 0, "");
                             ui.end_row();
-                            ui.label("Strength");
+                            ui.label("Specular").on_hover_text("Highlight strength.");
                             value_slider(ui, &mut shading.specular_strength, 0.0..=3.0, 2, "");
                             ui.end_row();
                         });
+                        if ui.button("Reset lighting").clicked() {
+                            controls.reset_light();
+                            let defaults = camera::Shading::default();
+                            shading.shininess = defaults.shininess;
+                            shading.specular_strength = defaults.specular_strength;
+                            shading.shadows = defaults.shadows;
+                        }
                         ui.separator();
 
                         ui.heading("Floor");
@@ -289,29 +294,58 @@ impl Gui {
                             );
                             ui.end_row();
                         });
-                        ui.label("Pattern density");
-                        value_slider(ui, &mut shading.floor_noise_density, 16.0..=256.0, 0, "");
-                        if ui.button("Reset shading").clicked() {
-                            *shading = camera::Shading::default();
+                        if ui.button("Reset floor").clicked() {
+                            let defaults = camera::Shading::default();
+                            shading.floor_brightness = defaults.floor_brightness;
+                            shading.floor_fade_start = defaults.floor_fade_start;
+                            shading.floor_fade_end = defaults.floor_fade_end;
                         }
                         ui.separator();
 
-                        ui.heading("Palette");
+                        ui.heading("Dithering");
+                        ui.checkbox(shared_grid, "Shared grid").on_hover_text(
+                            "Snap the whole scene to the Bayer pixel grid. Off keeps smooth scene edges and independent dither patterns.",
+                        );
+                        egui::Grid::new("dithering_grid").show(ui, |ui| {
+                            ui.label("Levels");
+                            value_slider(ui, levels, 2..=post::MAX_LEVELS, 0, "");
+                            ui.end_row();
+                            ui.label("Bayer density").on_hover_text(
+                                "Image pixel grid and robot/mesh Bayer pattern. Lower values make larger pixels.",
+                            );
+                            value_slider(ui, bayer_density, 0.125..=1.0, 2, "×");
+                            ui.end_row();
+                            ui.label("Floor density")
+                                .on_hover_text("World-locked floor cells; noise, shadows and fade share each cell.");
+                            value_slider(ui, &mut shading.floor_noise_density, 16.0..=256.0, 0, "");
+                            ui.end_row();
+                        });
+                        if ui.button("Reset dithering").clicked() {
+                            *levels = post::DEFAULT_LEVELS;
+                            *bayer_density = post::DEFAULT_BAYER_DENSITY;
+                            *shared_grid = true;
+                            shading.floor_noise_density = camera::Shading::default().floor_noise_density;
+                        }
+                        ui.separator();
+
+                        ui.heading("Colours");
                         ui.horizontal(|ui| {
                             ui.label("Dark");
                             ui.color_edit_button_rgb(&mut palette.dark);
                             ui.label("Light");
                             ui.color_edit_button_rgb(&mut palette.light);
                         });
-                        egui::Grid::new("levels_grid").show(ui, |ui| {
-                            ui.label("Levels");
-                            value_slider(ui, &mut *levels, 2..=post::MAX_LEVELS, 0, "");
-                            ui.end_row();
+                        ui.horizontal(|ui| {
+                            if ui.button("Random").clicked() {
+                                *palette = Palette::random_muted();
+                            }
+                            if ui.button("Swap colours").clicked() {
+                                std::mem::swap(&mut palette.dark, &mut palette.light);
+                            }
+                            if ui.button("Reset").clicked() {
+                                *palette = Palette::default();
+                            }
                         });
-                        if ui.button("Reset palette").clicked() {
-                            *palette = Palette::default();
-                            *levels = post::DEFAULT_LEVELS;
-                        }
                         ui.separator();
 
                         ui.heading("Capture");
@@ -319,7 +353,7 @@ impl Gui {
                             *capture_requested = true;
                         }
                         if !status.is_empty() {
-                            ui.label(status);
+                            ui.add(egui::Label::new(status).truncate()).on_hover_text(status);
                         }
                     });
                 });

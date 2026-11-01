@@ -108,8 +108,14 @@ impl WgpuContext {
         }
         self.shadows
             .update(queue, &camera_uniform, floor_origin, self.gui.shading.shadows);
-        self.post
-            .write_uniform(queue, &self.gui.palette, scale, self.gui.levels);
+        self.post.write_uniform(
+            queue,
+            &self.gui.palette,
+            scale,
+            self.gui.levels,
+            self.gui.bayer_density,
+            self.gui.shared_grid,
+        );
 
         // The buffer the image is copied into so the CPU can read it
         let padded_bytes_per_row = padded_bytes_per_row(width);

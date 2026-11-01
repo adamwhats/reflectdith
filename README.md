@@ -30,9 +30,14 @@ From this repo on the Linux host, with one olo simulator running:
 scripts/ros-viewer
 ```
 
-The launcher selects the single running `gazebo-web-sim` container. If several
-are running, it lists them and asks you to pass `--container NAME`. An explicit
-`--image IMAGE` runs without automatic container selection.
+The launcher selects the single running `gazebo-web-sim` container and waits if
+none is running yet. When that simulator is stopped or replaced, it relaunches
+the viewer with the new container's network and asset mounts. Closing the viewer
+ends the launcher. If several simulators are running, it lists them and asks you
+to pass `--container NAME`. An explicit container stays pinned to that source;
+`--image IMAGE` runs without automatic container selection. Headless probes,
+benchmarks, and timed captures run once and require a simulator at startup.
+The launcher supervisor requires Python 3; ROS subscriptions remain in rclrs.
 
 The **View → Mesh / Robot** selector switches at runtime and keeps each view’s
 camera position. ROS stays connected while viewing meshes, so switching back
@@ -117,18 +122,31 @@ of the zero-joint pose, and its visible patch stays beneath that frame.
 
 **Lighting → Shadows** toggles directional shadows cast by the robot,
 including shadows from one part of the robot onto another. They are on
-by default and follow the scene light, including light rotation. Use
+by default and follow the scene light, including light rotation. The light is
+fixed in the ROS world frame: robot turns change the lighting and shadows even
+while the camera follows `base_footprint`. **Lighting → Rotation** adds rotation around
+the world vertical axis. Use
 `--no-shadows` to start with them disabled. Shadows also appear in exported
 screenshots. Floor defaults are brightness **0.5**, fade start **0.6**, and fade
 end **2.5**. Shininess ranges from **1** to **64**.
 
 The floor blue noise is anchored to world X/Z coordinates, so it remains fixed
 as the robot moves or the camera orbits. Robot mode starts with a stationary light;
-**Light speed** enables rotation independently of the robot. Shininess and specular
+**Lighting → Rotation** enables rotation independently of the robot. Shininess and specular
 strength controls remain available below the robot picker; angle fields are omitted.
 Specular strength defaults to **1.5**.
-Adjust **Floor → Pattern density** in the panel to change its pattern spacing; robot
-surfaces retain their Bayer dithering. The camera keeps its orbit and zoom relative to the followed footprint.
+Adjust **Dithering → Floor density** in the panel to change its pattern spacing; robot
+surfaces use **Dithering → Bayer density** (0.125×–1×). Lower density makes the
+image pixels and Bayer pattern larger; 1× keeps one screen pixel per cell.
+**Dithering → Shared grid** is on by default: geometry, lighting, and shadows
+are sampled once per image cell, so edges cannot cut through an output pixel.
+Switch it off for smooth scene edges with independent dither patterns. Floor shadowing and fade are also sampled at the
+centre of each world-locked floor/noise cell. The densities remain independent:
+Bayer density sets the final screen grid, while floor density sets cells in world
+space. Screenshots preserve both scales. **Colours → Random** generates a subdued dark/light pair, mixing related and
+contrasting hues with readable brightness contrast. **Swap colours** exchanges the endpoints. Reset
+buttons affect only their own section. The camera keeps its orbit and zoom relative to the followed footprint.
+Rotation can reach ground level below the model centre; camera height stays just above the floor, even when zooming.
 
 ### Run without Docker
 
@@ -150,6 +168,8 @@ The Python file is only a test publisher; the viewer's ROS connection is Rust.
 
 ```sh
 cargo test
+# Pixel-grid rendering regressions (requires a GPU, no window):
+cargo test render_tests -- --ignored
 cargo run -- --urdf examples/arm.urdf --check-robot
 cargo run -- --urdf examples/arm.urdf --capture-after 2
 ```

@@ -1,5 +1,9 @@
 use crate::blue_noise;
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    collections::hash_map::RandomState,
+    hash::{BuildHasher, Hasher},
+};
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec3, Vec4};
@@ -21,6 +25,7 @@ pub struct Palette {
 // to the light colour. 2 is just the two colours
 pub const DEFAULT_LEVELS: u32 = 3;
 pub const MAX_LEVELS: u32 = 16;
+pub const DEFAULT_BAYER_DENSITY: f32 = 1.0;
 
 impl Default for Palette {
     fn default() -> Self {
@@ -32,6 +37,53 @@ impl Default for Palette {
     }
 }
 
+impl Palette {
+    pub fn random_muted() -> Self {
+        Self::muted_from_seed(RandomState::new().build_hasher().finish())
+    }
+
+    fn muted_from_seed(mut seed: u64) -> Self {
+        let mut unit = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 40) as f32 / 16777216.
+        };
+        let hue = unit();
+        // Mix related hues with occasional split-complementary pairings.
+        let light_hue = hue
+            + if unit() < 0.6 {
+                (unit() - 0.5) / 3.
+            } else {
+                1. / 3. + unit() / 3.
+            };
+        Self {
+            dark: muted_hsl(hue, 0.10 + unit() * 0.28, 0.06 + unit() * 0.14),
+            light: muted_hsl(light_hue, 0.10 + unit() * 0.28, 0.50 + unit() * 0.22),
+        }
+    }
+}
+
+fn muted_hsl(hue: f32, saturation: f32, lightness: f32) -> [f32; 3] {
+    let chroma = (1. - (2. * lightness - 1.).abs()) * saturation;
+    let h = hue.rem_euclid(1.) * 6.;
+    let x = chroma * (1. - (h % 2. - 1.).abs());
+    let rgb = match h as u32 {
+        0 => [chroma, x, 0.],
+        1 => [x, chroma, 0.],
+        2 => [0., chroma, x],
+        3 => [0., x, chroma],
+        4 => [x, 0., chroma],
+        _ => [chroma, 0., x],
+    };
+    rgb.map(|channel| {
+        let srgb = channel + lightness - chroma * 0.5;
+        if srgb <= 0.04045 {
+            srgb / 12.92
+        } else {
+            ((srgb + 0.055) / 1.055).powf(2.4)
+        }
+    })
+}
+
 // CPU-side mirror of the shader's post uniform. The field order and layout
 // must match the WGSL struct
 #[repr(C)]
@@ -39,14 +91,12 @@ impl Default for Palette {
 struct PostUniform {
     // Using Vec4 so bytes are aligned in WGSL, w is unused
     tones: [Vec4; MAX_LEVELS as usize],
-    // x is the size in pixels of each dither cell, which is 1 on screen and the
-    // scale factor when capturing at a higher resolution so the dither keeps
-    // the same look. y is the number of tones. The rest is unused
+    // x is capture scale, y the number of tones, z image/Bayer cells per pixel, w shared grid.
     block: Vec4,
 }
 
 impl PostUniform {
-    fn new(palette: &Palette, block_size: u32, levels: u32) -> Self {
+    fn new(palette: &Palette, block_size: u32, levels: u32, bayer_density: f32, shared_grid: bool) -> Self {
         let levels = levels.clamp(2, MAX_LEVELS);
         let dark = Vec3::from(palette.dark).powf(1. / 2.2);
         let light = Vec3::from(palette.light).powf(1. / 2.2);
@@ -57,7 +107,12 @@ impl PostUniform {
         }
         Self {
             tones,
-            block: Vec4::new(block_size as f32, levels as f32, 0.0, 0.0),
+            block: Vec4::new(
+                block_size as f32,
+                levels as f32,
+                bayer_density.clamp(0.125, 1.),
+                u32::from(shared_grid) as f32,
+            ),
         }
     }
 }
@@ -71,7 +126,7 @@ pub struct PostProcess {
     pub bind_group: BindGroup,
     // Uniform buffer holding the dither palette
     palette_buffer: Buffer,
-    last_palette: Cell<(Palette, u32, u32)>,
+    last_palette: Cell<(Palette, u32, u32, f32, bool)>,
     // The blue noise texture used as the dither threshold for the floor
     noise_view: TextureView,
 }
@@ -86,7 +141,13 @@ impl PostProcess {
     ) -> Self {
         let palette_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Palette buffer"),
-            contents: bytemuck::bytes_of(&PostUniform::new(&Palette::default(), 1, DEFAULT_LEVELS)),
+            contents: bytemuck::bytes_of(&PostUniform::new(
+                &Palette::default(),
+                1,
+                DEFAULT_LEVELS,
+                DEFAULT_BAYER_DENSITY,
+                true,
+            )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let noise_view = create_noise_view(device, queue);
@@ -100,7 +161,7 @@ impl PostProcess {
             bind_group_layout,
             bind_group,
             palette_buffer,
-            last_palette: Cell::new((Palette::default(), 1, DEFAULT_LEVELS)),
+            last_palette: Cell::new((Palette::default(), 1, DEFAULT_LEVELS, DEFAULT_BAYER_DENSITY, true)),
             noise_view,
         }
     }
@@ -148,14 +209,29 @@ impl PostProcess {
 
     // Upload the palette, dither cell size and number of tones, which take
     // effect at the next queue submit
-    pub fn write_uniform(&self, queue: &Queue, palette: &Palette, block_size: u32, levels: u32) {
-        if self.last_palette.replace((*palette, block_size, levels)) == (*palette, block_size, levels) {
+    pub fn write_uniform(
+        &self,
+        queue: &Queue,
+        palette: &Palette,
+        block_size: u32,
+        levels: u32,
+        bayer_density: f32,
+        shared_grid: bool,
+    ) {
+        let settings = (*palette, block_size, levels, bayer_density, shared_grid);
+        if self.last_palette.replace(settings) == settings {
             return;
         }
         queue.write_buffer(
             &self.palette_buffer,
             0,
-            bytemuck::bytes_of(&PostUniform::new(palette, block_size, levels)),
+            bytemuck::bytes_of(&PostUniform::new(
+                palette,
+                block_size,
+                levels,
+                bayer_density,
+                shared_grid,
+            )),
         );
     }
 }
@@ -300,11 +376,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn random_palettes_stay_muted_with_readable_dark_light_separation() {
+        for seed in 0..1024 {
+            let palette = Palette::muted_from_seed(seed);
+            for colour in [palette.dark, palette.light] {
+                assert!(colour.iter().all(|c| c.is_finite() && (0.0..=1.0).contains(c)));
+                let gamma = colour.map(|c| {
+                    if c <= 0.0031308 {
+                        12.92 * c
+                    } else {
+                        1.055 * c.powf(1. / 2.4) - 0.055
+                    }
+                });
+                let min = gamma.into_iter().fold(f32::INFINITY, f32::min);
+                let max = gamma.into_iter().fold(f32::NEG_INFINITY, f32::max);
+                assert!(max - min <= 0.381, "saturated palette at seed {seed}");
+            }
+            let luminance = |c: [f32; 3]| Vec3::from(c).dot(Vec3::new(0.2126, 0.7152, 0.0722));
+            assert!(luminance(palette.light) - luminance(palette.dark) > 0.06);
+        }
+    }
+
+    #[test]
     fn precomputed_palette_keeps_endpoints_and_gamma_spaced_midtones() {
         let palette = Palette::default();
         for levels in 2..=MAX_LEVELS {
-            let uniform = PostUniform::new(&palette, 2, levels);
-            assert_eq!(uniform.block, Vec4::new(2., levels as f32, 0., 0.));
+            let uniform = PostUniform::new(&palette, 2, levels, 1., true);
+            assert_eq!(uniform.block, Vec4::new(2., levels as f32, 1., 1.));
             assert!(uniform.tones[0].truncate().abs_diff_eq(Vec3::from(palette.dark), 1e-6));
             assert!(
                 uniform.tones[levels as usize - 1]
@@ -319,6 +417,8 @@ mod tests {
             },
             1,
             3,
+            1.,
+            true,
         );
         assert!(
             uniform.tones[1]

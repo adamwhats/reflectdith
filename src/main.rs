@@ -1,4 +1,6 @@
 mod benchmark;
+#[cfg(test)]
+mod render_tests;
 mod robot;
 #[cfg(feature = "ros2")]
 mod ros;
@@ -128,20 +130,36 @@ impl WgpuContext {
         aspect: f32,
         offset: f32,
     ) -> (camera::CameraUniform, glam::Vec3, glam::Mat4) {
+        let view = self
+            .active_robot()
+            .map(|robot| robot.view(&self.live.lock().unwrap(), &self.options));
+        let (motion, floor_origin, alignment) = view.map_or(
+            (
+                glam::Mat4::IDENTITY,
+                glam::Vec3::new(0., self.mesh.min_y, 0.),
+                glam::Mat4::IDENTITY,
+            ),
+            |view| (view.camera_motion, view.floor_origin, view.alignment),
+        );
+        let floor_height = motion.inverse().transform_point3(floor_origin).y;
+        let orbit = orbit.above_floor(floor_height);
         let camera = camera::camera_uniform(
-            orbit,
+            &orbit,
             self.gui.controls.model_angle,
             self.gui.controls.light_angle,
             &self.gui.shading,
             aspect,
             offset,
         );
-        if let Some(robot) = self.active_robot() {
+        (camera.follow(motion), floor_origin, alignment)
+    }
+
+    fn constrain_orbit(&self, orbit: &camera::Orbit) -> camera::Orbit {
+        let floor_height = self.active_robot().map_or(self.mesh.min_y, |robot| {
             let view = robot.view(&self.live.lock().unwrap(), &self.options);
-            (camera.follow(view.camera_motion), view.floor_origin, view.alignment)
-        } else {
-            (camera, glam::Vec3::new(0., self.mesh.min_y, 0.), glam::Mat4::IDENTITY)
-        }
+            view.camera_motion.inverse().transform_point3(view.floor_origin).y
+        });
+        orbit.above_floor(floor_height)
     }
 
     fn update_robot(&mut self) {
@@ -675,6 +693,9 @@ impl ApplicationHandler for App {
                 if let (true, Some(last)) = (self.dragging, self.last_cursor) {
                     self.orbit
                         .drag((position.x - last.x) as f32, (position.y - last.y) as f32);
+                    if let Some(context) = &self.wgpu_context {
+                        self.orbit = context.constrain_orbit(&self.orbit);
+                    }
                 }
                 self.last_cursor = Some(position);
             }
@@ -688,6 +709,9 @@ impl ApplicationHandler for App {
                         MouseScrollDelta::PixelDelta(position) => position.y as f32 / 40.0,
                     };
                     self.orbit.zoom(steps);
+                    if let Some(context) = &self.wgpu_context {
+                        self.orbit = context.constrain_orbit(&self.orbit);
+                    }
                 }
             }
 
@@ -788,6 +812,8 @@ impl ApplicationHandler for App {
                         &wgpu_context.gui.palette,
                         1,
                         wgpu_context.gui.levels,
+                        wgpu_context.gui.bayer_density,
+                        wgpu_context.gui.shared_grid,
                     );
                     let width = wgpu_context.surface_config.width as f32;
                     let aspect_ratio = width / wgpu_context.surface_config.height as f32;

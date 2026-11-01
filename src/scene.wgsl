@@ -113,15 +113,18 @@ fn fragment_floor(
     let to_light = normalize(camera.to_light.xyz);
     let n = normalize(vertex_output.normal);
     let diffuse_term = max(dot(n, to_light), 0.0);
-    let centre_distance = length(vertex_output.world_position.xz - camera.model[3].xz);
+    // Shade at the same world-space cell centre used by the blue-noise
+    // threshold, so neither shadow boundaries nor the fade cut a floor cell.
+    let density = max(camera.floor.w, 0.001);
+    let cell = vec2<i32>(floor(vertex_output.world_position.xz * density));
+    let centre_xz = (vec2<f32>(cell) + vec2<f32>(0.5)) / density;
+    let sample_world = vec3<f32>(centre_xz.x, camera.model[3].y, centre_xz.y);
+    let centre_distance = length(centre_xz - camera.model[3].xz);
     let fade = 1.0 - smoothstep(camera.floor.y, camera.floor.z, centre_distance);
-    // Outside the pool the final palette colour is dark regardless of noise.
     if fade <= 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
-    let colour = vec3<f32>(camera.floor.x) * (ambient_amount + light_colour * diffuse_term * surface_visibility(vertex_output.world_position, n)) * fade;
-    // World XZ, independent of the camera, robot pose, and screenshot resolution.
+    let colour = vec3<f32>(camera.floor.x) * (ambient_amount + light_colour * diffuse_term * surface_visibility(sample_world, n)) * fade;
     // Wrap signed cells explicitly so the pattern is continuous across the origin.
     let size = vec2<i32>(textureDimensions(world_noise));
-    let cell = vec2<i32>(floor(vertex_output.world_position.xz * camera.floor.w));
     let coords = ((cell % size) + size) % size;
     let threshold = textureLoad(world_noise, coords, 0).r;
     return vec4<f32>(colour, -threshold);

@@ -141,25 +141,28 @@ impl TopicPanel {
         } else {
             robot_name(&selected)
         };
-        ui.label("Robot");
-        egui::ComboBox::from_id_salt("ros_robot")
-            .width(250.)
-            .selected_text(label)
-            .show_ui(ui, |ui| {
-                if !selected.is_empty() && !self.catalog.descriptions.contains(&selected) {
-                    let current = selected.clone();
-                    ui.selectable_value(
-                        &mut selected,
-                        current.clone(),
-                        format!("{} (offline)", robot_name(&current)),
-                    );
-                }
-                for topic in &self.catalog.descriptions {
-                    if topic.rsplit('/').next() == Some("robot_description") {
-                        ui.selectable_value(&mut selected, topic.clone(), robot_name(topic));
+        ui.horizontal(|ui| {
+            ui.label("Robot");
+            egui::ComboBox::from_id_salt("ros_robot")
+                .width(200.)
+                .truncate()
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    if !selected.is_empty() && !self.catalog.descriptions.contains(&selected) {
+                        let current = selected.clone();
+                        ui.selectable_value(
+                            &mut selected,
+                            current.clone(),
+                            format!("{} (offline)", robot_name(&current)),
+                        );
                     }
-                }
-            });
+                    for topic in &self.catalog.descriptions {
+                        if topic.rsplit('/').next() == Some("robot_description") {
+                            ui.selectable_value(&mut selected, topic.clone(), robot_name(topic));
+                        }
+                    }
+                });
+        });
         if !selected.is_empty() && selected != previous_selected {
             self.requested.select_robot(selected);
         }
@@ -172,7 +175,6 @@ impl TopicPanel {
             ui.small("Looking for robots…");
         }
         self.changed |= before != self.requested;
-        ui.separator();
     }
 }
 

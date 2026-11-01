@@ -17,11 +17,12 @@ while (($#)); do
       cat <<'HELP'
 Usage: scripts/ros-viewer [--container NAME] [--image IMAGE] [--build-only] -- [viewer args]
 
-Runs with --ros enabled. With no arguments, attaches to the single running simulator.
+Runs with --ros enabled. With no arguments, follows the single running simulator.
+Automatically reconnects when that simulator is replaced; closing the viewer exits.
 --container auto discovers gazebo-web-sim containers; multiple matches require an explicit name.
 Build-only defaults to the local gazebo-web-sim-base:local image.
 --container reuses that container's image, network, IPC, mounted assets and ROS settings.
-Requires Linux, Docker, and a host Rust toolchain (same architecture as the image).
+Requires Linux, Docker, Python 3, and a host Rust toolchain (same architecture as the image).
 
 Examples:
   scripts/ros-viewer
@@ -40,6 +41,16 @@ HELP
   esac
 done
 if [[ "$mode" == run && -z "$container" && "$image_explicit" == false ]]; then container=auto; fi
+watch=true
+for argument in "$@"; do
+  case "$argument" in
+    --list-topics|--probe-ros|--probe-ros=*|--capture-after|--capture-after=*|--benchmark-frames|--benchmark-frames=*|--check-robot)
+      watch=false ;;
+  esac
+done
+if [[ "$container" == auto && "$mode" == run && "$watch" == true ]]; then
+  exec python3 "$repo_dir/scripts/ros-viewer-watch.py" "$@"
+fi
 if [[ "$container" == auto ]]; then
   candidates=()
   while IFS=$'\t' read -r name base_image; do
@@ -60,6 +71,9 @@ args=(--rm --init --user "$(id -u):$(id -g)" --workdir /viewer
   --env HOME=/tmp --env CARGO_HOME=/cargo --env RUSTUP_HOME=/rustup
   --env CARGO_BUILD_JOBS=4 --env WGPU_ADAPTER_NAME --env WGPU_POWER_PREF
   --volume "$repo_dir:/viewer" --volume "$cargo_dir:/cargo" --volume "$rustup_dir:/rustup:ro")
+if [[ -n "${REFLECDITH_VIEWER_CIDFILE:-}" ]]; then
+  args+=(--cidfile "$REFLECDITH_VIEWER_CIDFILE")
+fi
 ros_env=()
 if [[ -n "$container" ]]; then
   image="$(docker inspect --format '{{.Config.Image}}' "$container")"
