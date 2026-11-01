@@ -57,7 +57,7 @@ pub struct CameraUniform {
     // x is the specular shininess and y the specular strength, Vec4 for alignment
     pub specular: Vec4,
     // x is the floor brightness, y and z the distances from the centre where
-    // it starts and finishes fading to black, Vec4 for alignment
+    // it starts and finishes fading to black; w is noise cells per world unit
     pub floor: Vec4,
     // Model-to-world transform (rotation)
     pub model: Mat4,
@@ -78,26 +78,39 @@ pub struct Shading {
     // finishes fading to black
     pub floor_fade_start: f32,
     pub floor_fade_end: f32,
+    pub floor_noise_density: f32,
+    pub shadows: bool,
 }
 
 impl Default for Shading {
     fn default() -> Self {
         Self {
             shininess: 32.0,
-            specular_strength: 1.0,
-            floor_brightness: 0.3,
+            specular_strength: 1.5,
+            floor_brightness: 0.5,
             floor_fade_start: 0.6,
-            floor_fade_end: 3.0,
+            floor_fade_end: 2.5,
+            floor_noise_density: 128.0,
+            shadows: true,
         }
     }
 }
 
 impl CameraUniform {
-    // The same camera and light, but for the floor: it doesn't spin with the
-    // model, and sits at the given height
-    pub fn for_floor(&self, floor_y: f32) -> Self {
+    // Follow the footprint with the observer. Lighting stays in the fixed
+    // world frame, so turning the robot changes its lighting and shadow direction.
+    pub fn follow(&self, motion: Mat4) -> Self {
         Self {
-            model: Mat4::from_translation(Vec3::new(0.0, floor_y, 0.0)),
+            camera: motion.transform_point3(self.camera.truncate()).extend(0.),
+            view_proj: self.view_proj * motion.inverse(),
+            ..*self
+        }
+    }
+
+    // The floor shares the camera and world light, with its own model origin.
+    pub fn for_floor_at(&self, origin: Vec3) -> Self {
+        Self {
+            model: Mat4::from_translation(origin),
             ..*self
         }
     }
@@ -132,6 +145,7 @@ impl CameraTransform {
 }
 
 // A camera orbiting the origin, where the mesh is centred, at a distance
+#[derive(Clone, Copy)]
 pub struct Orbit {
     // Angle around the world Y axis in radians, 0 looks along -Z
     yaw: f32,
@@ -152,6 +166,10 @@ impl Default for Orbit {
 }
 
 impl Orbit {
+    pub fn fit_robot(&mut self) {
+        self.distance = 3.5;
+    }
+
     // Where the camera is in world space
     fn eye(&self) -> Vec3 {
         self.distance
@@ -164,11 +182,24 @@ impl Orbit {
 
     // Orbit by a mouse drag in pixels. The scene follows the cursor, so
     // dragging right moves the camera left. Pitch stops short of straight up
-    // or down, where the up direction would flip
+    // or down; the actual floor height constrains the lower angle
     pub fn drag(&mut self, dx: f32, dy: f32) {
         let limit = std::f32::consts::FRAC_PI_2 - 0.01;
         self.yaw -= dx * ORBIT_SENSITIVITY;
         self.pitch = (self.pitch + dy * ORBIT_SENSITIVITY).clamp(-limit, limit);
+    }
+
+    // Apply the actual floor height in the orbit's frame, including after zooming.
+    pub fn above_floor(&self, floor_height: f32) -> Self {
+        let limit = std::f32::consts::FRAC_PI_2 - 0.01;
+        let height = floor_height + 0.02;
+        let distance = self.distance.max(height / limit.sin());
+        let minimum_pitch = (height / distance).clamp(-1., 1.).asin().clamp(-limit, limit);
+        Self {
+            distance,
+            pitch: self.pitch.max(minimum_pitch),
+            ..*self
+        }
     }
 
     // Zoom by scroll steps, positive moves closer. It scales the distance so
@@ -197,7 +228,8 @@ pub fn camera_uniform(
     // when loaded, so this is the only model transform
     let model = Mat4::from_rotation_y(model_angle_degrees.to_radians());
 
-    // Light orbits around the world Y axis
+    // Add the light control's rotation around world Y, independently of the
+    // robot heading and camera orbit.
     let to_light = Quat::from_rotation_y(light_angle_degrees.to_radians()) * Vec3::ONE.normalize();
 
     // View - camera at the eye looking at the origin, where the mesh is centred
@@ -221,9 +253,55 @@ pub fn camera_uniform(
             shading.floor_brightness,
             shading.floor_fade_start,
             shading.floor_fade_end.max(shading.floor_fade_start + 0.01),
-            0.0,
+            shading.floor_noise_density,
         ),
         model,
         view_proj: shift * projection * view,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orbit_stays_above_floor_after_drag_zoom_and_robot_follow() {
+        let mut orbit = Orbit::default();
+        orbit.drag(100., -1e6);
+        let ground_level = orbit.above_floor(-0.5);
+        assert!((ground_level.eye().y + 0.48).abs() < 1e-5);
+        assert!(ground_level.pitch < 0., "allow orbiting below the model centre");
+        let motion = Mat4::from_rotation_translation(Quat::from_rotation_y(1.2), Vec3::new(3., 2., -4.));
+        for zoom in [100., -100., 100.] {
+            orbit.zoom(zoom);
+            for floor_height in [-1., 0., 0.8, 5.] {
+                let safe = orbit.above_floor(floor_height);
+                let camera = camera_uniform(&safe, 0., 0., &Shading::default(), 1., 0.).follow(motion);
+                assert!(camera.camera.y >= floor_height + 2.02 - 1e-5);
+                assert!(safe.eye().is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn world_light_and_added_rotation_stay_independent_of_footprint_heading() {
+        let orbit = Orbit::default();
+        let shading = Shading::default();
+        let initial = camera_uniform(&orbit, 0., 0., &shading, 16. / 9., 0.);
+        let turn = Mat4::from_rotation_translation(
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            Vec3::new(2., 0., 3.),
+        );
+        let followed = initial.follow(turn);
+        assert_eq!(followed.to_light, initial.to_light);
+        assert_ne!(followed.camera, initial.camera);
+        assert_ne!(followed.view_proj, initial.view_proj);
+        let light = followed.to_light.truncate();
+        let turned_surface_normal = turn.transform_vector3(Vec3::X);
+        assert!((turned_surface_normal.dot(light) - Vec3::X.dot(light)).abs() > 0.5);
+        let rotated = camera_uniform(&orbit, 0., 35., &shading, 16. / 9., 0.).follow(turn);
+        let expected = Quat::from_rotation_y(35_f32.to_radians()) * initial.to_light.truncate();
+        assert!(rotated.to_light.truncate().abs_diff_eq(expected, 1e-6));
+        assert_eq!(rotated.for_floor_at(Vec3::X).to_light, rotated.to_light);
     }
 }

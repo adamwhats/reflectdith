@@ -24,9 +24,8 @@ const bayer = array<u32, 64>(
 // Tones for the dithering and the dither cell size, mirrors PostUniform in
 // post.rs
 struct Post {
-    dark: vec4<f32>,
-    light: vec4<f32>,
-    // x is the size in pixels of each dither cell, y the number of tones
+    tones: array<vec4<f32>, 16>,
+    // x is the capture scale, y the number of tones, z the Bayer density, w shared grid
     block: vec4<f32>,
 };
 
@@ -37,9 +36,6 @@ var scene: texture_2d<f32>;
 @group(0) @binding(1)
 var<uniform> post: Post;
 
-// Blue noise, a tileable threshold map with no visible pattern
-@group(0) @binding(2)
-var blue_noise: texture_2d<f32>;
 
 // Vertex shader entry point
 // There are no vertex buffers, the position comes from the vertex index alone
@@ -61,20 +57,16 @@ fn vertex_main(
 // Reads the pixel at the same screen position from the offscreen image
 @fragment
 fn fragment_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
-    // In the fragment stage the position is in pixels, so drop the fractional
-    // part to get the integer pixel
-    let pixel = vec2<i32>(frag_pos.xy);
-
-    // The dither works in square cells of block pixels, which is 1 on screen.
-    // A screenshot at a higher resolution uses bigger cells so the dither
-    // looks the same, just sharper. Each cell reads the scene once, at its
-    // centre, and gets one threshold
-    let block = max(i32(post.block.x), 1);
-    let cell = pixel / vec2<i32>(block);
+    // One scene sample for the entire output cell. The silhouette, lighting,
+    // shadow and threshold all share this screen-space grid.
+    let capture_scale = max(post.block.x, 1.0);
+    let density = clamp(post.block.z, 0.125, 1.0);
+    let bayer_cell = vec2<i32>(floor(frag_pos.xy * density / capture_scale));
     let max_texel = vec2<i32>(textureDimensions(scene)) - vec2<i32>(1);
-    let coords = min(cell * vec2<i32>(block) + vec2<i32>(block / 2), max_texel);
-
-    // Exact texel read at mip level 0, no sampler or filtering needed
+    let scene_density = select(1.0, density, post.block.w > 0.5);
+    let scene_cell = floor(frag_pos.xy * scene_density / capture_scale);
+    let centre = (scene_cell + vec2<f32>(0.5)) * capture_scale / scene_density;
+    let coords = clamp(vec2<i32>(floor(centre)), vec2<i32>(0), max_texel);
     let colour = textureLoad(scene, coords, 0);
 
     // Calculate luminance. The scene texture holds linear values, which can go
@@ -88,18 +80,13 @@ fn fragment_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f3
     // 8 pixels in x and y. Indexing with a runtime value needs a variable, so
     // copy the constant array into one
     var bayer_local = bayer;
-    let x = u32(cell.x) % 8u;
-    let y = u32(cell.y) % 8u;
+    let x = u32(bayer_cell.x) % 8u;
+    let y = u32(bayer_cell.y) % 8u;
     let bayer_threshold = (f32(bayer_local[y * 8u + x]) + 0.5) / 64.0;
 
-    // The blue noise texture tiles the same way, over its own size
-    let noise_size = vec2<u32>(textureDimensions(blue_noise));
-    let noise_coords = vec2<i32>(vec2<u32>(cell) % noise_size);
-    let noise_threshold = textureLoad(blue_noise, noise_coords, 0).r;
-
-    // The scene pass writes an alpha of 0 for the floor and 1 for everything
-    // else, which picks the threshold the surface is dithered with
-    let threshold = select(bayer_threshold, noise_threshold, colour.a < 0.5);
+    // The floor supplies a negative world-space blue-noise threshold in alpha.
+    // Mesh alpha is 1 and retains the original screen-space Bayer pattern.
+    let threshold = select(bayer_threshold, -colour.a, colour.a < 0.5);
 
     // Quantise the brightness to evenly spaced tones from dark to light. Scaled
     // to the tone steps, the whole part picks the band between two neighbouring
@@ -110,15 +97,6 @@ fn fragment_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f3
     let scaled = luminance * (levels - 1.0);
     let band = min(floor(scaled), levels - 2.0);
     let step = band + select(0.0, 1.0, scaled - band > threshold);
-    let tone = step / (levels - 1.0);
-
-    // Mix the two colours in gamma space, so the steps between tones look even
-    // rather than bunching up at the bright end
-    let encoded = mix(
-        pow(post.dark.rgb, vec3<f32>(1.0 / 2.2)),
-        pow(post.light.rgb, vec3<f32>(1.0 / 2.2)),
-        tone,
-    );
-    let output_colour = pow(encoded, vec3<f32>(2.2));
-    return vec4<f32>(output_colour, 1.0);
+    // The finite palette is gamma-interpolated on the CPU when edited.
+    return vec4<f32>(post.tones[u32(step)].rgb, 1.0);
 }

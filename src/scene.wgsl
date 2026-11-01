@@ -14,7 +14,7 @@ struct Camera {
     // x is the specular shininess, y the specular strength
     specular: vec4<f32>,
     // x is the floor brightness, y and z the distances from the centre where it
-    // starts and finishes fading to black
+    // starts and finishes fading to black. w is world-noise cells per unit
     floor: vec4<f32>,
     model: mat4x4<f32>,
     view_proj: mat4x4<f32>,
@@ -22,6 +22,34 @@ struct Camera {
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
+
+@group(1) @binding(0)
+var world_noise: texture_2d<f32>;
+
+struct Shadow {
+    light_view_proj: mat4x4<f32>,
+    settings: vec4<f32>,
+};
+@group(2) @binding(0) var<uniform> shadow: Shadow;
+@group(2) @binding(1) var shadow_map: texture_depth_2d;
+@group(2) @binding(2) var shadow_sampler: sampler_comparison;
+
+fn surface_visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
+    if shadow.settings.x < 0.5 { return 1.0; }
+    // Offset the receiver slightly to avoid a surface shadowing itself.
+    let clip = shadow.light_view_proj * vec4<f32>(world + normal * 0.002, 1.0);
+    let ndc = clip.xyz / clip.w;
+    if any(abs(ndc.xy) > vec2<f32>(1.0)) || ndc.z < 0.0 || ndc.z > 1.0 { return 1.0; }
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    let texel = 1.0 / vec2<f32>(textureDimensions(shadow_map));
+    var visibility = 0.0;
+    for (var y = -1; y <= 1; y += 1) {
+        for (var x = -1; x <= 1; x += 1) {
+            visibility += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + vec2<f32>(f32(x), f32(y)) * texel, ndc.z - 0.0002);
+        }
+    }
+    return visibility / 9.0;
+}
 
 // Output structure for the vertex shader
 // x, y, z are the position of the vertex in clip space
@@ -64,10 +92,11 @@ fn fragment_main(
     let half = normalize(to_light + view);
     // Diffuse lighting
     let diffuse_term = max(dot(n, to_light), 0.0);
-    let diffuse = albedo_colour * (ambient_amount + light_colour * diffuse_term);
+    let visibility = surface_visibility(vertex_output.world_position, n);
+    let diffuse = albedo_colour * (ambient_amount + light_colour * diffuse_term * visibility);
     // Specular lighting
     let specular_term = pow(max(dot(n, half), 0.0), camera.specular.x);
-    let specular = light_colour * camera.specular.y * specular_term;
+    let specular = light_colour * camera.specular.y * specular_term * visibility;
     // Sum for final colour
     let colour = diffuse + specular;
     return vec4<f32>(colour, 1.0);
@@ -76,8 +105,7 @@ fn fragment_main(
 // Fragment shader entry point for the floor, which is lit like the mesh, then
 // fades to black between two distances from the centre, leaving a pool of light
 // under the mesh
-// The alpha is 0, where the mesh writes 1, which tells the post pass to dither
-// the floor with blue noise instead of the Bayer matrix
+// Negative alpha carries a world-locked blue-noise threshold; mesh alpha is 1.
 @fragment
 fn fragment_floor(
     vertex_output: VertexOutput,
@@ -85,8 +113,19 @@ fn fragment_floor(
     let to_light = normalize(camera.to_light.xyz);
     let n = normalize(vertex_output.normal);
     let diffuse_term = max(dot(n, to_light), 0.0);
-    let centre_distance = length(vertex_output.world_position.xz);
+    // Shade at the same world-space cell centre used by the blue-noise
+    // threshold, so neither shadow boundaries nor the fade cut a floor cell.
+    let density = max(camera.floor.w, 0.001);
+    let cell = vec2<i32>(floor(vertex_output.world_position.xz * density));
+    let centre_xz = (vec2<f32>(cell) + vec2<f32>(0.5)) / density;
+    let sample_world = vec3<f32>(centre_xz.x, camera.model[3].y, centre_xz.y);
+    let centre_distance = length(centre_xz - camera.model[3].xz);
     let fade = 1.0 - smoothstep(camera.floor.y, camera.floor.z, centre_distance);
-    let colour = vec3<f32>(camera.floor.x) * (ambient_amount + light_colour * diffuse_term) * fade;
-    return vec4<f32>(colour, 0.0);
+    if fade <= 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+    let colour = vec3<f32>(camera.floor.x) * (ambient_amount + light_colour * diffuse_term * surface_visibility(sample_world, n)) * fade;
+    // Wrap signed cells explicitly so the pattern is continuous across the origin.
+    let size = vec2<i32>(textureDimensions(world_noise));
+    let coords = ((cell % size) + size) % size;
+    let threshold = textureLoad(world_noise, coords, 0).r;
+    return vec4<f32>(colour, -threshold);
 }

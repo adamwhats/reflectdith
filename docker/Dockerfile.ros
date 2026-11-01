@@ -1,0 +1,9 @@
+ARG ROS_IMAGE=gazebo-web-sim-base:local
+FROM ${ROS_IMAGE}
+USER root
+# rclrs 0.7 bundles these interface bindings, including example_interfaces.
+# Keep this in a viewer layer rather than installing into the robot container.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-jazzy-example-interfaces ros-jazzy-test-msgs \
+    libvulkan1 mesa-vulkan-drivers libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 \
+    && rm -rf /var/lib/apt/lists/*

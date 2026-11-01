@@ -3,7 +3,15 @@ name = "reflecdith"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+ros2 = ["dep:rclrs"]
+
 [dependencies]
+clap = { version = "4", features = ["derive"] }
+urdf-rs = "0.10"
+mesh-loader = "0.1.13"
+rclrs = { version = "0.7", optional = true }
 bytemuck = "1.25.2"
 egui = { version = "0.37.0", features = ["default_fonts"] }
 egui-wgpu = "0.37.0"
@@ -15,3 +23,24 @@ pollster = "1.0.1"
 stl_io = "0.11.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+# Keep large Collada assets practical in the prototype's debug builds.
+[profile.dev.package.mesh-loader]
+opt-level = 2
+
+[profile.dev.package.roxmltree]
+opt-level = 2
+
+# The launcher runs development builds. Optimize the render/UI hot paths while
+# retaining debug symbols and keeping dependency rebuilds limited.
+[profile.dev.package.reflecdith]
+opt-level = 1
+
+[profile.dev.package.egui]
+opt-level = 2
+
+[profile.dev.package.epaint]
+opt-level = 2
+
+[profile.dev.package.wgpu-core]
+opt-level = 1

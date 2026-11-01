@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Linux prototype: reuse a ROS image and the host Rust toolchain, without
+# installing anything into the running robot container.
+set -euo pipefail
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+container=""
+image="${REFLECDITH_ROS_IMAGE:-gazebo-web-sim-base:local}"
+mode=run
+image_explicit=false
+while (($#)); do
+  case "$1" in
+    --container) container="${2:?container name required}"; shift 2 ;;
+    --image) image="${2:?image required}"; image_explicit=true; shift 2 ;;
+    --build-only) mode=build; shift ;;
+    --) shift; break ;;
+    -h|--help)
+      cat <<'HELP'
+Usage: scripts/ros-viewer [--container NAME] [--image IMAGE] [--build-only] -- [viewer args]
+
+Runs with --ros enabled. With no arguments, follows the single running simulator.
+Automatically reconnects when that simulator is replaced; closing the viewer exits.
+--container auto discovers gazebo-web-sim containers; multiple matches require an explicit name.
+Build-only defaults to the local gazebo-web-sim-base:local image.
+--container reuses that container's image, network, IPC, mounted assets and ROS settings.
+Requires Linux, Docker, Python 3, and a host Rust toolchain (same architecture as the image).
+
+Examples:
+  scripts/ros-viewer
+  scripts/ros-viewer -- --list-topics
+  scripts/ros-viewer --build-only
+  scripts/ros-viewer --container my-gazebo -- --probe-ros 5 --joint-topic /robot/joint_states
+  scripts/ros-viewer --container my-gazebo -- --description-topic /robot/robot_description
+  scripts/ros-viewer --container my-gazebo -- --urdf /robots/robot.urdf --fixed-frame odom
+
+Viewer args: cargo run -- --help
+Set ROS_DOMAIN_ID / RMW_IMPLEMENTATION to override the selected container's values.
+REFLECDITH_NVIDIA=0 disables NVIDIA passthrough (e.g. for headless probes).
+HELP
+      exit 0 ;;
+    *) break ;;
+  esac
+done
+if [[ "$mode" == run && -z "$container" && "$image_explicit" == false ]]; then container=auto; fi
+watch=true
+for argument in "$@"; do
+  case "$argument" in
+    --list-topics|--probe-ros|--probe-ros=*|--capture-after|--capture-after=*|--benchmark-frames|--benchmark-frames=*|--check-robot)
+      watch=false ;;
+  esac
+done
+if [[ "$container" == auto && "$mode" == run && "$watch" == true ]]; then
+  exec python3 "$repo_dir/scripts/ros-viewer-watch.py" "$@"
+fi
+if [[ "$container" == auto ]]; then
+  candidates=()
+  while IFS=$'\t' read -r name base_image; do
+    if [[ "$base_image" == gazebo-web-sim:* ]]; then candidates+=("$name"); fi
+  done < <(docker ps --format '{{.Names}}\t{{.Image}}')
+  if ((${#candidates[@]} != 1)); then
+    echo "Expected one running simulator; found ${#candidates[@]}. Pass --container NAME or --image IMAGE." >&2
+    if ((${#candidates[@]})); then printf '  %s\n' "${candidates[@]}" >&2; fi
+    exit 2
+  fi
+  container="${candidates[0]}"
+  echo "Using simulator: $container" >&2
+fi
+cargo_dir="${CARGO_HOME:-$HOME/.cargo}"
+rustup_dir="${RUSTUP_HOME:-$HOME/.rustup}"
+[[ -x "$cargo_dir/bin/cargo" && -d "$rustup_dir/toolchains" ]] || { echo 'Host rustup toolchain not found' >&2; exit 1; }
+args=(--rm --init --user "$(id -u):$(id -g)" --workdir /viewer
+  --env HOME=/tmp --env CARGO_HOME=/cargo --env RUSTUP_HOME=/rustup
+  --env CARGO_BUILD_JOBS=4 --env WGPU_ADAPTER_NAME --env WGPU_POWER_PREF
+  --volume "$repo_dir:/viewer" --volume "$cargo_dir:/cargo" --volume "$rustup_dir:/rustup:ro")
+if [[ -n "${REFLECDITH_VIEWER_CIDFILE:-}" ]]; then
+  args+=(--cidfile "$REFLECDITH_VIEWER_CIDFILE")
+fi
+ros_env=()
+if [[ -n "$container" ]]; then
+  image="$(docker inspect --format '{{.Config.Image}}' "$container")"
+  args+=(--network "container:$container" --volumes-from "$container:ro")
+  ipc_mode="$(docker inspect --format '{{.HostConfig.IpcMode}}' "$container")"
+  case "$ipc_mode" in
+    shareable) args+=(--ipc "container:$container") ;;
+    host|container:*) args+=(--ipc "$ipc_mode") ;;
+    *)
+      echo "Container IPC is $ipc_mode; Fast DDS shared memory may be unavailable. Prefer a simulator started with --ipc shareable." >&2 ;;
+  esac
+  # Carry only ROS discovery/middleware settings, never application credentials.
+  while IFS= read -r entry; do
+    case "$entry" in
+      ROS_DOMAIN_ID=*|RMW_IMPLEMENTATION=*|ROS_LOCALHOST_ONLY=*|ROS_AUTOMATIC_DISCOVERY_RANGE=*|ROS_STATIC_PEERS=*|ROS_DISCOVERY_SERVER=*|FASTRTPS_DEFAULT_PROFILES_FILE=*|FASTDDS_DEFAULT_PROFILES_FILE=*|CYCLONEDDS_URI=*|AMENT_PREFIX_PATH=*)
+        ros_env+=(--env "$entry") ;;
+    esac
+  done < <(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container")
+fi
+# Cache a small dependency layer for each exact simulator image and Dockerfile.
+base_id="$(docker image inspect --format '{{.Id}}' "$image")"
+layer_hash="$(sha256sum "$repo_dir/docker/Dockerfile.ros")"
+viewer_image="reflecdith-viewer:${base_id:7:12}-${layer_hash:0:12}"
+if ! docker image inspect "$viewer_image" >/dev/null 2>&1; then
+  docker build --build-arg "ROS_IMAGE=$image" --file "$repo_dir/docker/Dockerfile.ros" --tag "$viewer_image" "$repo_dir"
+fi
+image="$viewer_image"
+args+=("${ros_env[@]}")
+# Simulator processes can run as root; sharing their Fast DDS SHM segments
+# from an unprivileged viewer can discover topics but silently receive no data.
+# These small pose messages use UDP instead, without changing the simulator.
+if [[ "${REFLECDITH_USE_CONTAINER_DDS_PROFILE:-0}" != 1 ]]; then
+  args+=(--env FASTRTPS_DEFAULT_PROFILES_FILE=/viewer/docker/fastdds-udp.xml
+    --env FASTDDS_DEFAULT_PROFILES_FILE=/viewer/docker/fastdds-udp.xml)
+fi
+for key in ROS_DOMAIN_ID RMW_IMPLEMENTATION ROS_LOCALHOST_ONLY ROS_AUTOMATIC_DISCOVERY_RANGE ROS_STATIC_PEERS ROS_DISCOVERY_SERVER; do
+  if [[ -v "$key" ]]; then args+=(--env "$key=${!key}"); fi
+done
+if [[ "$mode" == run ]]; then
+  if [[ -d /dev/dri ]]; then
+    args+=(--device /dev/dri)
+    for node in /dev/dri/renderD* /dev/dri/card*; do
+      [[ -e "$node" ]] && args+=(--group-add "$(stat -c '%g' "$node")")
+    done
+  fi
+  if [[ "${REFLECDITH_NVIDIA:-1}" == 1 ]] && command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null 2>&1; then
+    args+=(--gpus all --env NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute,display)
+  fi
+  if [[ -n "${DISPLAY:-}" && -d /tmp/.X11-unix ]]; then
+    args+=(--env "DISPLAY=$DISPLAY" --volume /tmp/.X11-unix:/tmp/.X11-unix:ro)
+    if [[ -n "${XAUTHORITY:-}" && -f "$XAUTHORITY" ]]; then
+      args+=(--env XAUTHORITY=/tmp/viewer.xauth --volume "$XAUTHORITY:/tmp/viewer.xauth:ro")
+    fi
+  fi
+  if [[ -n "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$WAYLAND_DISPLAY" ]]; then
+    args+=(--env XDG_RUNTIME_DIR=/tmp/viewer-runtime --env WAYLAND_DISPLAY=wayland-viewer
+      --volume "${XDG_RUNTIME_DIR}/$WAYLAND_DISPLAY:/tmp/viewer-runtime/wayland-viewer:ro")
+  fi
+fi
+# Capture AMENT_PREFIX_PATH before sourcing: selected robot overlays contain mesh packages.
+exec docker run "${args[@]}" --entrypoint /bin/bash "$image" -c '
+  set -eo pipefail
+  overlay_prefixes="${AMENT_PREFIX_PATH:-}"
+  source /opt/ros/jazzy/setup.bash
+  for setup in /*_ws/install/setup.bash; do
+    if [[ -f "$setup" ]]; then source "$setup"; fi
+  done
+  for prefix in /ros-packages /shared/ros-packages; do
+    if [[ -d "$prefix/share" ]]; then
+      export AMENT_PREFIX_PATH="$prefix:$AMENT_PREFIX_PATH"
+      export LD_LIBRARY_PATH="$prefix/lib:${LD_LIBRARY_PATH:-}"
+    fi
+  done
+  export AMENT_PREFIX_PATH="${overlay_prefixes:+$overlay_prefixes:}$AMENT_PREFIX_PATH"
+  export PATH="/cargo/bin:$PATH"
+  cargo build --locked --features ros2 --target-dir target/ros2
+  if [[ "$1" == build ]]; then exit 0; fi
+  shift
+  exec target/ros2/debug/reflecdith --ros "$@"
+' viewer "$mode" "$@"

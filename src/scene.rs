@@ -5,11 +5,16 @@ use wgpu::{
     RenderPipeline, RenderPipelineDescriptor, ShaderModule, VertexState,
 };
 
-// Describes what bind groups the scene pipeline expects: just the camera
-pub fn create_pipeline_layout(device: &Device, camera_transform_layout: &BindGroupLayout) -> PipelineLayout {
+// The scene draws share a world-noise texture; each has its own camera/model uniform.
+pub fn create_pipeline_layout(
+    device: &Device,
+    camera_transform_layout: &BindGroupLayout,
+    noise_layout: &BindGroupLayout,
+    shadow_layout: &BindGroupLayout,
+) -> PipelineLayout {
     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Scene pipeline layout"),
-        bind_group_layouts: &[Some(camera_transform_layout)],
+        bind_group_layouts: &[Some(camera_transform_layout), Some(noise_layout), Some(shadow_layout)],
         immediate_size: 0,
     })
 }
