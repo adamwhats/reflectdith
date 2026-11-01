@@ -57,7 +57,7 @@ pub struct CameraUniform {
     // x is the specular shininess and y the specular strength, Vec4 for alignment
     pub specular: Vec4,
     // x is the floor brightness, y and z the distances from the centre where
-    // it starts and finishes fading to black, Vec4 for alignment
+    // it starts and finishes fading to black; w is noise cells per world unit
     pub floor: Vec4,
     // Model-to-world transform (rotation)
     pub model: Mat4,
@@ -78,6 +78,8 @@ pub struct Shading {
     // finishes fading to black
     pub floor_fade_start: f32,
     pub floor_fade_end: f32,
+    pub floor_noise_density: f32,
+    pub shadows: bool,
 }
 
 impl Default for Shading {
@@ -85,9 +87,11 @@ impl Default for Shading {
         Self {
             shininess: 32.0,
             specular_strength: 1.0,
-            floor_brightness: 0.3,
+            floor_brightness: 0.5,
             floor_fade_start: 0.6,
-            floor_fade_end: 3.0,
+            floor_fade_end: 20.0,
+            floor_noise_density: 128.0,
+            shadows: true,
         }
     }
 }
@@ -95,9 +99,17 @@ impl Default for Shading {
 impl CameraUniform {
     // The same camera and light, but for the floor: it doesn't spin with the
     // model, and sits at the given height
-    pub fn for_floor(&self, floor_y: f32) -> Self {
+    pub fn follow(&self, motion: Mat4) -> Self {
         Self {
-            model: Mat4::from_translation(Vec3::new(0.0, floor_y, 0.0)),
+            camera: motion.transform_point3(self.camera.truncate()).extend(0.),
+            view_proj: self.view_proj * motion.inverse(),
+            ..*self
+        }
+    }
+
+    pub fn for_floor_at(&self, origin: Vec3) -> Self {
+        Self {
+            model: Mat4::from_translation(origin),
             ..*self
         }
     }
@@ -152,6 +164,10 @@ impl Default for Orbit {
 }
 
 impl Orbit {
+    pub fn fit_robot(&mut self) {
+        self.distance = 3.5;
+    }
+
     // Where the camera is in world space
     fn eye(&self) -> Vec3 {
         self.distance
@@ -221,7 +237,7 @@ pub fn camera_uniform(
             shading.floor_brightness,
             shading.floor_fade_start,
             shading.floor_fade_end.max(shading.floor_fade_start + 0.01),
-            0.0,
+            shading.floor_noise_density,
         ),
         model,
         view_proj: shift * projection * view,

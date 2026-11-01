@@ -18,13 +18,14 @@ pub struct Palette {
 
 // How many tones the dither quantises to, evenly spaced from the dark colour
 // to the light colour. 2 is just the two colours
-pub const DEFAULT_LEVELS: u32 = 2;
+pub const DEFAULT_LEVELS: u32 = 3;
 
 impl Default for Palette {
     fn default() -> Self {
         Self {
-            dark: [0.002, 0.0, 0.01],
-            light: [1.0, 0.15, 0.6],
+            // sRGB #170505 and #685841, stored as linear RGB.
+            dark: [0.008568126, 0.001517635, 0.001517635],
+            light: [0.13843162, 0.09758735, 0.052860647],
         }
     }
 }
@@ -81,7 +82,7 @@ impl PostProcess {
         });
         let noise_view = create_noise_view(device, queue);
         let bind_group_layout = create_bind_group_layout(device);
-        let bind_group = create_bind_group(device, &bind_group_layout, scene_view, &palette_buffer, &noise_view);
+        let bind_group = create_bind_group(device, &bind_group_layout, scene_view, &palette_buffer);
         let pipeline_layout = create_pipeline_layout(device, &bind_group_layout);
         let pipeline = create_pipeline(device, shader_module, &pipeline_layout, surface_format);
 
@@ -94,6 +95,35 @@ impl PostProcess {
         }
     }
 
+    // The scene pass samples blue noise using world coordinates, then carries
+    // its threshold in alpha for the palette pass. One binding is shared by all draws.
+    pub fn world_noise_layout(device: &Device) -> BindGroupLayout {
+        device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("World noise layout"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        })
+    }
+
+    pub fn world_noise_bind_group(&self, device: &Device, layout: &BindGroupLayout) -> BindGroup {
+        device.create_bind_group(&BindGroupDescriptor {
+            label: Some("World noise"),
+            layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&self.noise_view),
+            }],
+        })
+    }
+
     // The bind group points at one specific texture view, so it has to be
     // rebuilt whenever the scene texture is recreated (window resize)
     pub fn set_scene_view(&mut self, device: &Device, scene_view: &TextureView) {
@@ -103,13 +133,7 @@ impl PostProcess {
     // A bind group reading a different scene texture but the same palette,
     // used to dither a screenshot rendered at another resolution
     pub fn bind_group_for(&self, device: &Device, scene_view: &TextureView) -> BindGroup {
-        create_bind_group(
-            device,
-            &self.bind_group_layout,
-            scene_view,
-            &self.palette_buffer,
-            &self.noise_view,
-        )
+        create_bind_group(device, &self.bind_group_layout, scene_view, &self.palette_buffer)
     }
 
     // Upload the palette, dither cell size and number of tones, which take
@@ -149,9 +173,7 @@ fn create_noise_view(device: &Device, queue: &Queue) -> TextureView {
 }
 
 // Describes the shape of the post-process bindings, all visible to the
-// fragment stage: two 2D float textures, the scene and the blue noise, read
-// with textureLoad so they need no sampler and no filtering, and the palette
-// uniform buffer
+// fragment stage: the scene texture (read with textureLoad) and palette uniform.
 fn create_bind_group_layout(device: &Device) -> BindGroupLayout {
     device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("Post bind group layout"),
@@ -176,28 +198,16 @@ fn create_bind_group_layout(device: &Device) -> BindGroupLayout {
                 },
                 count: None,
             },
-            BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
         ],
     })
 }
 
-// Binds the scene texture view to binding 0, the palette to binding 1 and the
-// blue noise to binding 2
+// Binds the scene texture (including floor thresholds in alpha) and palette.
 fn create_bind_group(
     device: &Device,
     layout: &BindGroupLayout,
     scene_view: &TextureView,
     palette_buffer: &Buffer,
-    noise_view: &TextureView,
 ) -> BindGroup {
     device.create_bind_group(&BindGroupDescriptor {
         label: Some("Post bind group"),
@@ -210,10 +220,6 @@ fn create_bind_group(
             BindGroupEntry {
                 binding: 1,
                 resource: palette_buffer.as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(noise_view),
             },
         ],
     })

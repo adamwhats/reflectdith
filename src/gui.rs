@@ -18,7 +18,7 @@ const PANEL_WIDTH: f32 = 300.0;
 const VALUE_WIDTH: f32 = 70.0;
 
 // The rotation of the model and the light about the world Y axis. Each angle
-// advances at its speed every frame, and can also be set from the menu
+// advances at its speed every frame; only light speed is exposed in the menu
 pub struct SceneControls {
     // Angles in degrees
     pub model_angle: f32,
@@ -40,12 +40,9 @@ impl Default for SceneControls {
 }
 
 impl SceneControls {
-    // Put both speeds back to the default turntable animation, leaving the
-    // angles where they are
-    pub fn reset_speeds(&mut self) {
-        let defaults = Self::default();
-        self.model_speed = defaults.model_speed;
-        self.light_speed = defaults.light_speed;
+    pub fn reset_light(&mut self) {
+        self.light_angle = 0.;
+        self.light_speed = 0.;
     }
 
     // Move both angles on by dt seconds, wrapped to 0 to 360
@@ -70,7 +67,7 @@ pub struct Gui {
     // The number of tones the dither quantises to, from the dark colour to the
     // light colour
     pub levels: u32,
-    // The model and light rotation being edited
+    // Animation state; the menu exposes light speed
     pub controls: SceneControls,
     // The specular and floor settings being edited
     pub shading: camera::Shading,
@@ -86,6 +83,9 @@ pub struct Gui {
     pub capture_requested: bool,
     // The result of the last capture, shown under the button
     pub status: String,
+    pub robot_status: Option<String>,
+    pub visible: bool,
+    pub topics: Option<crate::topics::TopicPanel>,
 }
 
 // A slider followed by a number box of a fixed width, so the boxes line up
@@ -159,6 +159,9 @@ impl Gui {
             menu_width_px: 0.0,
             capture_requested: false,
             status: String::new(),
+            robot_status: None,
+            visible: true,
+            topics: None,
         }
     }
 
@@ -170,7 +173,8 @@ impl Gui {
     // Pass a window event on to egui. Returns whether egui used the event, for
     // example a click on the menu, so it shouldn't also move the camera
     pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
-        self.state.on_window_event(window, event).consumed
+        let response = self.state.on_window_event(window, event);
+        self.visible && response.consumed
     }
 
     // Lay out the menu for this frame, which may edit the palette. Returns
@@ -185,8 +189,14 @@ impl Gui {
         let selected_model = &mut self.selected_model;
         let capture_requested = &mut self.capture_requested;
         let status = &self.status;
+        let robot_status = &self.robot_status;
+        let visible = &mut self.visible;
+        let topics = &mut self.topics;
         let mut menu_width_points = 0.0;
         let mut output = self.context.run_ui(input, |ui| {
+            if !*visible {
+                return;
+            }
             let panel = egui::Panel::left("side_menu")
                 .resizable(false)
                 .default_size(PANEL_WIDTH)
@@ -194,46 +204,48 @@ impl Gui {
                     // The window can be small, so let the menu scroll rather than
                     // be cut off
                     egui::ScrollArea::vertical().show(ui, |ui| {
+                        if ui.button("Hide controls (Tab)").clicked() {
+                            *visible = false;
+                        }
+                        ui.separator();
+                        if let Some(topics) = topics {
+                            topics.ui(ui);
+                        }
                         // Each section is a grid with the labels in one column and
                         // the controls in the next, so they line up
-                        ui.heading("Model");
-                        egui::Grid::new("model_grid").show(ui, |ui| {
-                            ui.label("Mesh");
-                            egui::ComboBox::from_id_salt("model_select")
-                                .selected_text(model_name(&models[*selected_model]))
-                                .show_ui(ui, |ui| {
-                                    for (index, model) in models.iter().enumerate() {
-                                        ui.selectable_value(selected_model, index, model_name(model));
-                                    }
-                                });
-                            ui.end_row();
-                        });
-                        ui.separator();
-
-                        ui.heading("Rotation");
-                        egui::Grid::new("rotation_grid").show(ui, |ui| {
-                            ui.label("Model angle");
-                            value_slider(ui, &mut controls.model_angle, 0.0..=360.0, 0, "°");
-                            ui.end_row();
-                            ui.label("Model speed");
-                            value_slider(ui, &mut controls.model_speed, -180.0..=180.0, 0, "°/s");
-                            ui.end_row();
-                            ui.label("Light angle");
-                            value_slider(ui, &mut controls.light_angle, 0.0..=360.0, 0, "°");
-                            ui.end_row();
+                        if let Some(status) = robot_status {
+                            ui.label(status);
+                        }
+                        if robot_status.is_none() {
+                            ui.heading("Model");
+                            egui::Grid::new("model_grid").show(ui, |ui| {
+                                ui.label("Mesh");
+                                egui::ComboBox::from_id_salt("model_select")
+                                    .selected_text(model_name(&models[*selected_model]))
+                                    .show_ui(ui, |ui| {
+                                        for (index, model) in models.iter().enumerate() {
+                                            ui.selectable_value(selected_model, index, model_name(model));
+                                        }
+                                    });
+                                ui.end_row();
+                            });
+                            ui.separator();
+                        }
+                        ui.heading("Lighting");
+                        egui::Grid::new("light_grid").show(ui, |ui| {
                             ui.label("Light speed");
                             value_slider(ui, &mut controls.light_speed, -180.0..=180.0, 0, "°/s");
                             ui.end_row();
                         });
-                        if ui.button("Reset speeds").clicked() {
-                            controls.reset_speeds();
+                        if ui.button("Reset light").clicked() {
+                            controls.reset_light();
                         }
                         ui.separator();
 
                         ui.heading("Specular");
                         egui::Grid::new("specular_grid").show(ui, |ui| {
                             ui.label("Shininess");
-                            value_slider(ui, &mut shading.shininess, 1.0..=256.0, 0, "");
+                            value_slider(ui, &mut shading.shininess, 1.0..=64.0, 0, "");
                             ui.end_row();
                             ui.label("Strength");
                             value_slider(ui, &mut shading.specular_strength, 0.0..=3.0, 2, "");
@@ -242,6 +254,7 @@ impl Gui {
                         ui.separator();
 
                         ui.heading("Floor");
+                        ui.checkbox(&mut shading.shadows, "Shadows");
                         egui::Grid::new("floor_grid").show(ui, |ui| {
                             ui.label("Brightness");
                             value_slider(ui, &mut shading.floor_brightness, 0.0..=1.0, 2, "");
@@ -250,7 +263,13 @@ impl Gui {
                             value_slider(ui, &mut shading.floor_fade_start, 0.0..=6.0, 1, "");
                             ui.end_row();
                             ui.label("Fade end");
-                            value_slider(ui, &mut shading.floor_fade_end, 0.0..=8.0, 1, "");
+                            value_slider(
+                                ui,
+                                &mut shading.floor_fade_end,
+                                0.0..=crate::vertices::FLOOR_HALF_EXTENT,
+                                1,
+                                "",
+                            );
                             ui.end_row();
                         });
                         if ui.button("Reset shading").clicked() {
@@ -258,6 +277,9 @@ impl Gui {
                         }
                         ui.separator();
 
+                        ui.label("Floor noise density (world units)");
+                        value_slider(ui, &mut shading.floor_noise_density, 16.0..=256.0, 0, "");
+                        ui.separator();
                         ui.heading("Palette");
                         ui.horizontal(|ui| {
                             ui.label("Dark");
@@ -289,7 +311,11 @@ impl Gui {
             // The space the whole panel takes, including its margins
             menu_width_points = panel.response.rect.width();
         });
-        self.menu_width_px = menu_width_points * output.pixels_per_point;
+        self.menu_width_px = if self.visible {
+            menu_width_points * output.pixels_per_point
+        } else {
+            0.0
+        };
 
         // Cursor changes, clipboard etc. are applied to the window here
         let platform_output = std::mem::take(&mut output.platform_output);

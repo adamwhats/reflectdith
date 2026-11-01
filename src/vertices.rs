@@ -12,8 +12,8 @@ use wgpu::{Device, util::DeviceExt};
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Vertex {
-    position: [f32; 3],
-    normal: [f32; 3],
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
 }
 
 // Centre the positions on the origin and scale them to fit a unit sphere, so
@@ -66,7 +66,7 @@ pub fn create_mesh(device: &Device, file_path: &Path) -> Mesh {
 
 // Half the width of the floor, which is a square centred on the origin. The
 // shader fades it to black well inside this, so its edge is never seen
-const FLOOR_HALF_EXTENT: f32 = 8.0;
+pub(crate) const FLOOR_HALF_EXTENT: f32 = 32.0;
 
 // The number of vertices in the floor, which is two triangles
 pub const FLOOR_VERTEX_COUNT: u32 = 6;
@@ -154,5 +154,18 @@ pub fn buffer_layout<'a>() -> wgpu::VertexBufferLayout<'a> {
                 format: wgpu::VertexFormat::Float32x3,
             },
         ],
+    }
+}
+
+// Upload robot geometry in its authored coordinates.
+pub fn upload(device: &Device, vertices: &[Vertex]) -> Mesh {
+    Mesh {
+        vertex_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Robot visual"),
+            contents: bytemuck::cast_slice(vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        }),
+        num_vertices: vertices.len(),
+        min_y: vertices.iter().map(|v| v.position[1]).fold(f32::INFINITY, f32::min),
     }
 }

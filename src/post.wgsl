@@ -37,9 +37,6 @@ var scene: texture_2d<f32>;
 @group(0) @binding(1)
 var<uniform> post: Post;
 
-// Blue noise, a tileable threshold map with no visible pattern
-@group(0) @binding(2)
-var blue_noise: texture_2d<f32>;
 
 // Vertex shader entry point
 // There are no vertex buffers, the position comes from the vertex index alone
@@ -92,14 +89,9 @@ fn fragment_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f3
     let y = u32(cell.y) % 8u;
     let bayer_threshold = (f32(bayer_local[y * 8u + x]) + 0.5) / 64.0;
 
-    // The blue noise texture tiles the same way, over its own size
-    let noise_size = vec2<u32>(textureDimensions(blue_noise));
-    let noise_coords = vec2<i32>(vec2<u32>(cell) % noise_size);
-    let noise_threshold = textureLoad(blue_noise, noise_coords, 0).r;
-
-    // The scene pass writes an alpha of 0 for the floor and 1 for everything
-    // else, which picks the threshold the surface is dithered with
-    let threshold = select(bayer_threshold, noise_threshold, colour.a < 0.5);
+    // The floor supplies a negative world-space blue-noise threshold in alpha.
+    // Mesh alpha is 1 and retains the original screen-space Bayer pattern.
+    let threshold = select(bayer_threshold, -colour.a, colour.a < 0.5);
 
     // Quantise the brightness to evenly spaced tones from dark to light. Scaled
     // to the tone steps, the whole part picks the band between two neighbouring
