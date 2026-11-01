@@ -148,6 +148,8 @@ contrasting hues with readable brightness contrast. **Swap colours** exchanges t
 buttons affect only their own section. The camera keeps its orbit and zoom relative to the followed footprint.
 Rotation can reach ground level below the model centre; camera height stays just above the floor, even when zooming.
 
+Normal viewing is capped at **60 FPS**. Benchmark runs remain uncapped.
+
 ### Run without Docker
 
 With a Jazzy installation sourced and a C linker available:

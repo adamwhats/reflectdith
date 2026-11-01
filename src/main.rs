@@ -25,7 +25,7 @@ use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::Window,
 };
@@ -37,8 +37,8 @@ use wgpu::{
     Surface, SurfaceColorSpace, SurfaceConfiguration, TextureView,
 };
 
-// Caps the render loop at this many frames per second, 0 means uncapped
-const TARGET_FPS: f64 = 0.0;
+// Normal viewing is capped; benchmarks measure uncapped rendering work.
+const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
 
 // Directory the models are listed from, and the name (without extension) of
 // the one shown at startup
@@ -53,7 +53,7 @@ struct App {
     last_frame_time: Instant,
     fps_frame_count: u32,
     fps_last_update: Instant,
-    fps_last_frame_start: Instant,
+    next_frame_time: Instant,
     // The camera the mouse orbits and zooms
     orbit: camera::Orbit,
     alternate_orbit: camera::Orbit,
@@ -724,6 +724,14 @@ impl ApplicationHandler for App {
 
             // Main render task
             WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                if self.benchmark.is_none() {
+                    if now < self.next_frame_time {
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_time));
+                        return;
+                    }
+                    self.next_frame_time = now + FRAME_INTERVAL;
+                }
                 if let Some(wgpu_context) = &mut self.wgpu_context {
                     let window = self.window.as_ref().unwrap();
 
@@ -932,23 +940,21 @@ impl ApplicationHandler for App {
                         self.fps_frame_count = 0;
                         self.fps_last_update = Instant::now();
                     }
-
-                    // FPS cap
-                    if TARGET_FPS > 0.0 {
-                        let target_frame_time = Duration::from_secs_f64(1.0 / TARGET_FPS);
-                        let elapsed = self.fps_last_frame_start.elapsed();
-                        if elapsed < target_frame_time {
-                            std::thread::sleep(target_frame_time - elapsed);
-                        }
-                        self.fps_last_frame_start = Instant::now();
-                    }
-
-                    // Trigger the next redraw
-                    window.request_redraw();
                 }
             }
             // Fall through for other events
             _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            if self.benchmark.is_some() || Instant::now() >= self.next_frame_time {
+                window.request_redraw();
+            } else {
+                // Wait without blocking input or spinning between frames.
+                event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_time));
+            }
         }
     }
 }
@@ -1048,7 +1054,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         last_frame_time: Instant::now(),
         fps_frame_count: 0,
         fps_last_update: Instant::now(),
-        fps_last_frame_start: Instant::now(),
+        next_frame_time: Instant::now(),
         orbit,
         alternate_orbit,
         #[cfg(feature = "ros2")]
