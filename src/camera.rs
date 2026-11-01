@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{
-    Mat4, Vec3, Vec4,
+    Mat4, Quat, Vec3, Vec4,
     camera::rh::{proj::directx, view::look_at_mat4},
 };
 use wgpu::{
@@ -12,6 +12,8 @@ use wgpu::{
 
 // Constants
 const ROT_VEL: f32 = 0.5;
+// Light orbits the opposite way to the model
+const LIGHT_ROT_VEL: f32 = -0.4;
 // Meshes are loaded centred on the origin and scaled to fit a unit sphere
 const EYE: Vec3 = Vec3::new(0.0, 1.0, 2.0);
 const FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
@@ -43,6 +45,8 @@ pub fn create_camera_transform_bind_group_layout(device: &Device) -> BindGroupLa
 pub struct CameraUniform {
     // Camera look direction, using Vec4 so bytes are aligned in WGSL
     pub camera: Vec4,
+    // Direction from the surface towards the light in world space, Vec4 for alignment
+    pub to_light: Vec4,
     // Model-to-world transform (rotation)
     pub model: Mat4,
     // World-to-clip transform (view followed by projection)
@@ -86,6 +90,9 @@ pub fn camera_uniform_at_time(run_time: Duration, aspect_ratio: f32) -> CameraUn
     // oriented when loaded, so this is the only model transform
     let model = Mat4::from_rotation_y(run_time.as_secs_f32() * ROT_VEL);
 
+    // Light orbits around the world Y axis
+    let to_light = Quat::from_rotation_y(run_time.as_secs_f32() * LIGHT_ROT_VEL) * Vec3::ONE.normalize();
+
     // View - camera at EYE looking at the origin, where the mesh is centred
     let view = look_at_mat4(EYE, Vec3::ZERO, Vec3::Y);
 
@@ -95,6 +102,7 @@ pub fn camera_uniform_at_time(run_time: Duration, aspect_ratio: f32) -> CameraUn
     // Return CameraUniform
     CameraUniform {
         camera,
+        to_light: to_light.extend(0.0),
         model,
         view_proj: projection * view,
     }

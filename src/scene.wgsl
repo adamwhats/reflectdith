@@ -1,6 +1,4 @@
 // Lighting constants
-// to_light points from the surface towards the light, in world space
-const to_light: vec3<f32> = normalize(vec3<f32>(1.0, 1.0, 1.0));
 const light_colour: vec3<f32> = vec3<f32>(1.0, 1.0, 1.0);
 // Grey, as the colour comes from the palette in the post pass
 const albedo_colour: vec3<f32> = vec3<f32>(0.8, 0.8, 0.8);
@@ -13,6 +11,8 @@ const specular_strength: f32 = 0.5;
 // view_proj takes world space to clip space
 struct Camera {
     camera: vec4<f32>,
+    // Points from the surface towards the light, in world space
+    to_light: vec4<f32>,
     model: mat4x4<f32>,
     view_proj: mat4x4<f32>,
 };
@@ -55,6 +55,7 @@ fn fragment_main(
     vertex_output: VertexOutput,
 ) -> @location(0) vec4<f32> {
     // Vectors
+    let to_light = normalize(camera.to_light.xyz);
     let n = normalize(vertex_output.normal);
     let view = normalize(camera.camera.xyz - vertex_output.world_position);
     let half = normalize(to_light + view);
