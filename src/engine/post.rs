@@ -1,4 +1,4 @@
-use crate::blue_noise;
+use super::blue_noise;
 use std::{
     cell::Cell,
     collections::hash_map::RandomState,

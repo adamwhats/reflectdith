@@ -20,11 +20,12 @@ struct ShadowUniform {
     settings: Vec4,
 }
 
+// What is casting shadows: the active scene, and its revision, which the scene
+// changes whenever its casters move or change shape
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Casters {
-    Robot { geometry: u64, pose: u64 },
-    Mesh { model: usize, angle: u32 },
-    Empty,
+pub struct Casters {
+    pub scene: usize,
+    pub revision: u64,
 }
 
 #[derive(Default)]
@@ -160,7 +161,7 @@ impl Shadows {
                 module: &shader,
                 entry_point: Some("vertex_shadow"),
                 compilation_options: Default::default(),
-                buffers: &[Some(crate::vertices::buffer_layout())],
+                buffers: &[Some(super::vertices::buffer_layout())],
             },
             // Front faces are nearest the light on closed meshes, so back
             // faces never win the depth test; culling them halves the fill.
@@ -199,7 +200,7 @@ impl Shadows {
         }
     }
 
-    pub fn update(&self, queue: &wgpu::Queue, camera: &crate::camera::CameraUniform, floor: Vec3, strength: f32) {
+    pub fn update(&self, queue: &wgpu::Queue, camera: &super::camera::CameraUniform, floor: Vec3, strength: f32) {
         let centre = floor + Vec3::Y;
         let direction = camera.to_light.truncate().normalize();
         let view = look_at_mat4(centre + direction * 12., centre, Vec3::Y);
@@ -236,20 +237,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shadow_cache_tracks_light_geometry_pose_and_view_changes() {
+    fn shadow_cache_tracks_light_scene_and_revision_changes() {
         let cache = ShadowCache::default();
-        let robot = Casters::Robot { geometry: 1, pose: 2 };
+        let robot = Casters { scene: 2, revision: 1 };
         assert!(cache.needs_render(1, robot));
         assert!(!cache.needs_render(1, robot));
         assert!(cache.needs_render(2, robot));
-        assert!(cache.needs_render(2, Casters::Robot { geometry: 1, pose: 3 }));
-        assert!(cache.needs_render(2, Casters::Robot { geometry: 2, pose: 3 }));
-        let mesh = Casters::Mesh { model: 0, angle: 0 };
+        assert!(cache.needs_render(2, Casters { scene: 2, revision: 2 }));
+        // Another scene at the same revision still has different casters
+        let mesh = Casters { scene: 0, revision: 2 };
         assert!(cache.needs_render(2, mesh));
         assert!(!cache.needs_render(2, mesh));
-        assert!(cache.needs_render(2, Casters::Mesh { model: 0, angle: 1 }));
-        assert!(cache.needs_render(2, Casters::Mesh { model: 1, angle: 1 }));
-        assert!(cache.needs_render(2, Casters::Empty));
+        assert!(cache.needs_render(2, Casters { scene: 0, revision: 3 }));
         assert!(cache.needs_render(2, robot));
     }
 }

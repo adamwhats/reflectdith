@@ -210,13 +210,14 @@ impl Orbit {
     }
 }
 
-// Return the CameraUniform for the orbit camera, the model and light angles in
-// degrees, and the shading. The image is shifted right by ndc_offset_x, in normalised device
-// coordinates where the whole width is 2, to centre the model in the part of
-// the window which isn't covered by the menu
+// Return the CameraUniform for the orbit camera, the scene's model transform,
+// the light angle in degrees, and the shading. The image is shifted right by
+// ndc_offset_x, in normalised device coordinates where the whole width is 2,
+// to centre the model in the part of the window which isn't covered by the
+// menu
 pub fn camera_uniform(
     orbit: &Orbit,
-    model_angle_degrees: f32,
+    model: Mat4,
     light_angle_degrees: f32,
     shading: &Shading,
     aspect_ratio: f32,
@@ -224,10 +225,6 @@ pub fn camera_uniform(
 ) -> CameraUniform {
     let eye = orbit.eye();
     let camera = eye.extend(0.0);
-
-    // Spin around the world Y axis. The mesh is already centred and oriented
-    // when loaded, so this is the only model transform
-    let model = Mat4::from_rotation_y(model_angle_degrees.to_radians());
 
     // Add the light control's rotation around world Y, independently of the
     // robot heading and camera orbit.
@@ -277,7 +274,7 @@ mod tests {
             orbit.zoom(zoom);
             for floor_height in [-1., 0., 0.8, 5.] {
                 let safe = orbit.above_floor(floor_height);
-                let camera = camera_uniform(&safe, 0., 0., &Shading::default(), 1., 0.).follow(motion);
+                let camera = camera_uniform(&safe, Mat4::IDENTITY, 0., &Shading::default(), 1., 0.).follow(motion);
                 assert!(camera.camera.y >= floor_height + 2.02 - 1e-5);
                 assert!(safe.eye().is_finite());
             }
@@ -288,7 +285,7 @@ mod tests {
     fn world_light_and_added_rotation_stay_independent_of_footprint_heading() {
         let orbit = Orbit::default();
         let shading = Shading::default();
-        let initial = camera_uniform(&orbit, 0., 0., &shading, 16. / 9., 0.);
+        let initial = camera_uniform(&orbit, Mat4::IDENTITY, 0., &shading, 16. / 9., 0.);
         let turn = Mat4::from_rotation_translation(
             Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
             Vec3::new(2., 0., 3.),
@@ -300,7 +297,7 @@ mod tests {
         let light = followed.to_light.truncate();
         let turned_surface_normal = turn.transform_vector3(Vec3::X);
         assert!((turned_surface_normal.dot(light) - Vec3::X.dot(light)).abs() > 0.5);
-        let rotated = camera_uniform(&orbit, 0., 35., &shading, 16. / 9., 0.).follow(turn);
+        let rotated = camera_uniform(&orbit, Mat4::IDENTITY, 35., &shading, 16. / 9., 0.).follow(turn);
         let expected = Quat::from_rotation_y(35_f32.to_radians()) * initial.to_light.truncate();
         assert!(rotated.to_light.truncate().abs_diff_eq(expected, 1e-6));
         assert_eq!(rotated.for_floor_at(Vec3::X).to_light, rotated.to_light);

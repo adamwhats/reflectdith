@@ -1,5 +1,5 @@
 //! rclrs subscriptions on a worker thread; the renderer only reads snapshots.
-use crate::robot::{Options, SharedState};
+use crate::scenes::robot::{Options, SharedState};
 use glam::{Mat4, Quat, Vec3};
 use rclrs::{
     CreateBasicExecutor, DynamicMessage, DynamicMessageView, IntoPrimitiveOptions, SequenceValue, SimpleValue, Value,
@@ -27,7 +27,7 @@ impl Drop for RosConnection {
 }
 impl RosConnection {
     pub fn start(options: Options, state: SharedState) -> Result<Self, Box<dyn std::error::Error>> {
-        state.lock().unwrap().requested = Some(crate::topics::TopicSelection::from(&options));
+        state.lock().unwrap().requested = Some(crate::scenes::robot::topics::TopicSelection::from(&options));
         // Report discovery/type-support setup errors before opening the viewer.
         let context = rclrs::Context::default_from_env()?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -44,7 +44,7 @@ impl RosConnection {
                 let mut ready = false;
                 while !stop_thread.load(Ordering::Relaxed) {
                     if last_discovery.elapsed() >= Duration::from_secs(1) {
-                        let mut catalog = crate::topics::TopicCatalog::default();
+                        let mut catalog = crate::scenes::robot::topics::TopicCatalog::default();
                         for (name, types) in node.get_topic_names_and_types()? {
                             if node.count_publishers(&name)? == 0 {
                                 continue;
@@ -136,7 +136,7 @@ impl RosConnection {
 
 fn subscribe_topics(
     node: &rclrs::Node,
-    selection: &crate::topics::TopicSelection,
+    selection: &crate::scenes::robot::topics::TopicSelection,
     state: SharedState,
     generation: u64,
     use_description_root: bool,
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     #[ignore = "requires a running ROS robot with a robot_description and joint-state publisher"]
     fn discovers_robot_and_switches_joint_subscriptions() {
-        fn wait(state: &SharedState, condition: impl Fn(&crate::robot::LiveState) -> bool) {
+        fn wait(state: &SharedState, condition: impl Fn(&crate::scenes::robot::model::LiveState) -> bool) {
             let deadline = Instant::now() + Duration::from_secs(12);
             loop {
                 {

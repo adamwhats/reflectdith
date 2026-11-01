@@ -1,5 +1,5 @@
 //! GPU regressions for the relationship between dither cells and scene sampling.
-use crate::{camera, post, scene, shadows, textures, vertices};
+use super::{camera, pipeline, post, shadows, textures, vertices};
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
 use wgpu::util::DeviceExt;
@@ -202,8 +202,8 @@ fn floor_shadow_and_fade_are_constant_inside_each_world_noise_cell() {
         label: None,
         source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
     });
-    let layout = scene::create_pipeline_layout(&device, &camera_layout, &noise_layout, &shadows.scene_layout);
-    let pipeline = scene::create_pipeline(
+    let layout = pipeline::create_pipeline_layout(&device, &camera_layout, &noise_layout, &shadows.scene_layout);
+    let pipeline = pipeline::create_pipeline(
         &device,
         &shader,
         &layout,
@@ -218,7 +218,7 @@ fn floor_shadow_and_fade_are_constant_inside_each_world_noise_cell() {
         floor_fade_end: 6.,
         ..Default::default()
     };
-    let camera = camera::camera_uniform(&camera::Orbit::default(), 0., 0., &shading, 1., 0.);
+    let camera = camera::camera_uniform(&camera::Orbit::default(), glam::Mat4::IDENTITY, 0., &shading, 1., 0.);
     let floor_origin = Vec3::new(0., -0.6, 0.);
     let floor_camera = camera.for_floor_at(floor_origin);
     let camera_group = camera::CameraTransform::new(&device, &camera_layout, bytemuck::bytes_of(&camera));
@@ -375,8 +375,8 @@ fn first_vertex_indexing_renders_mesh_identically() {
         label: None,
         source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
     });
-    let layout = scene::create_pipeline_layout(&device, &camera_layout, &noise_layout, &shadows.scene_layout);
-    let pipeline = scene::create_pipeline(
+    let layout = pipeline::create_pipeline_layout(&device, &camera_layout, &noise_layout, &shadows.scene_layout);
+    let pipeline = pipeline::create_pipeline(
         &device,
         &shader,
         &layout,
@@ -385,7 +385,14 @@ fn first_vertex_indexing_renders_mesh_identically() {
         "fragment_main",
         Some(wgpu::Face::Back),
     );
-    let camera = camera::camera_uniform(&camera::Orbit::default(), 37., 52., &camera::Shading::default(), 1., 0.);
+    let camera = camera::camera_uniform(
+        &camera::Orbit::default(),
+        glam::Mat4::from_rotation_y(37_f32.to_radians()),
+        52.,
+        &camera::Shading::default(),
+        1.,
+        0.,
+    );
     let camera_group = camera::CameraTransform::new(&device, &camera_layout, bytemuck::bytes_of(&camera));
     let noise = device.create_texture_with_data(
         &queue,

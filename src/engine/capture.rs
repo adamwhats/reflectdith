@@ -10,7 +10,8 @@ use wgpu::{
     TexelCopyTextureInfo, TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
 };
 
-use crate::{WgpuContext, camera, textures};
+use super::{Engine, camera, textures};
+use crate::scenes::Scene;
 
 // How many times larger than the window the screenshot is, in each direction.
 // The window is made 1/CAPTURE_SCALE of the monitor, so a screenshot is exactly
@@ -21,14 +22,19 @@ pub const CAPTURE_SCALE: u32 = 2;
 // Directory the screenshots are saved in
 const CAPTURE_DIR: &str = "screenshots";
 
-impl WgpuContext {
+impl Engine {
     // Render the current frame again at a higher resolution, without the menu,
     // and save it as a PNG. Returns the path it was saved to and the size of the image
     //
     // The dither cells are scaled up with the image, so the screenshot looks
     // like the window but sharper. The commands are submitted straight away
     // and this waits for the GPU to finish
-    pub fn save_screenshot(&self, orbit: &camera::Orbit) -> Result<(PathBuf, u32, u32), Box<dyn Error>> {
+    pub fn save_screenshot(
+        &self,
+        scene: &mut dyn Scene,
+        scene_id: usize,
+        orbit: &camera::Orbit,
+    ) -> Result<(PathBuf, u32, u32), Box<dyn Error>> {
         let device = &self.device;
         let queue = &self.queue;
         let format = self.surface_config.format;
@@ -90,24 +96,7 @@ impl WgpuContext {
         // aspect ratio is the window's. The dither cells are scale pixels wide
         // The caller writes the window's values again afterwards
         let aspect_ratio = window_width as f32 / window_height as f32;
-        let (camera_uniform, floor_origin, alignment) = self.scene_uniform(orbit, aspect_ratio, 0.0);
-        queue.write_buffer(&self.camera_transform.buffer, 0, bytemuck::bytes_of(&camera_uniform));
-        queue.write_buffer(
-            &self.floor_camera_transform.buffer,
-            0,
-            bytemuck::bytes_of(&camera_uniform.for_floor_at(floor_origin)),
-        );
-        if let Some(robot) = self.active_robot() {
-            robot.update(
-                queue,
-                &camera_uniform,
-                &self.live.lock().unwrap(),
-                &self.options,
-                alignment,
-            );
-        }
-        self.shadows
-            .update(queue, &camera_uniform, floor_origin, self.gui.shading.shadow_strength);
+        self.prepare_frame(scene, orbit, aspect_ratio, 0.0);
         self.post.write_uniform(
             queue,
             &self.gui.palette,
@@ -130,7 +119,7 @@ impl WgpuContext {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Capture encoder"),
         });
-        self.encode_scene_pass(&mut encoder, &scene_view, &depth_view);
+        self.encode_scene_pass(&mut encoder, &scene_view, &depth_view, scene, scene_id);
         self.encode_post_pass(&mut encoder, &post_bind_group, &output_view);
         encoder.copy_texture_to_buffer(
             TexelCopyTextureInfo {
