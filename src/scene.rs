@@ -5,23 +5,26 @@ use wgpu::{
     RenderPipeline, RenderPipelineDescriptor, ShaderModule, VertexState,
 };
 
+// Describes what bind groups the scene pipeline expects: just the camera
 pub fn create_pipeline_layout(device: &Device, camera_transform_layout: BindGroupLayout) -> PipelineLayout {
     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Render pipeline layout"),
+        label: Some("Scene pipeline layout"),
         bind_group_layouts: &[Some(&camera_transform_layout)],
         immediate_size: 0,
     })
 }
 
-pub fn create_render_pipeline(
+// Creates the pipeline which draws the lit mesh into the offscreen scene
+// texture. The post-process pipeline lives in post.rs
+pub fn create_pipeline(
     device: &Device,
     shader_module: &ShaderModule,
     pipeline_layout: &PipelineLayout,
-    surface_format: wgpu::TextureFormat,
+    scene_format: wgpu::TextureFormat,
     depth_format: wgpu::TextureFormat,
 ) -> RenderPipeline {
     let render_pipeline_descriptor = RenderPipelineDescriptor {
-        label: Some("Render Pipeline"),
+        label: Some("Scene Pipeline"),
         layout: Some(pipeline_layout),
 
         // Add the vertex state
@@ -45,7 +48,7 @@ pub fn create_render_pipeline(
             entry_point: Some("fragment_main"),
             compilation_options: PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: surface_format,
+                format: scene_format,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],

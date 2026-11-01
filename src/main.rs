@@ -1,6 +1,7 @@
 mod camera;
-mod depth;
-mod pipeline;
+mod post;
+mod scene;
+mod textures;
 mod vertices;
 
 use std::{
@@ -19,8 +20,6 @@ use wgpu::{
     CurrentSurfaceTexture, Device, Instance, Queue, RenderPipeline, RequestAdapterOptions, ShaderModuleDescriptor,
     ShaderSource, StoreOp, Surface, SurfaceColorSpace, SurfaceConfiguration, TextureView, util::DeviceExt,
 };
-
-use crate::depth::create_depth_view;
 
 // Caps the render loop at this many frames per second, 0 means uncapped
 const TARGET_FPS: f64 = 0.0;
@@ -52,9 +51,15 @@ struct WgpuContext {
     camera_transform: camera::CameraTransform,
     // View of a texture storing per-pixel depth
     depth_view: TextureView,
-    // The baked pipeline state: shader stages, vertex layout, and fixed-function
-    // GPU config, bound before every draw call
-    render_pipeline: RenderPipeline,
+    // View of the offscreen texture the scene is rendered into, which the
+    // post-process pass then reads
+    scene_view: TextureView,
+    // The baked pipeline state for drawing the mesh: shader stages, vertex
+    // layout, and fixed-function GPU config, bound before every draw call
+    scene_pipeline: RenderPipeline,
+    // The pipeline and bind group for the pass which draws the scene texture
+    // to the surface
+    post: post::PostProcess,
 }
 
 impl ApplicationHandler for App {
@@ -112,10 +117,14 @@ impl ApplicationHandler for App {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        // Compile the WGSL source into a shader module
-        let shader_module = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("Shaders"),
-            source: ShaderSource::Wgsl(include_str!("shaders.wgsl").into()),
+        // Compile the WGSL source into a shader modules
+        let scene_shader_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("Scene shader"),
+            source: ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+        });
+        let post_shader_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("Post shader"),
+            source: ShaderSource::Wgsl(include_str!("post.wgsl").into()),
         });
 
         // Define the camera transform
@@ -127,20 +136,27 @@ impl ApplicationHandler for App {
         );
 
         // Create a depth texture view of the same size as the surface
-        let depth_view = depth::create_depth_view(&device, size.width, size.height);
+        let depth_view = textures::create_depth_view(&device, size.width, size.height);
 
-        // Describes what bind groups the pipeline expects
-        let pipeline_layout = pipeline::create_pipeline_layout(&device, camera_transform_layout);
+        // Create the offscreen scene texture view of the same size as the
+        // surface, in the surface format so the pipelines' targets match
+        let scene_view = textures::create_scene_view(&device, surface_format, size.width, size.height);
 
-        // Bake the shader stages, layout, and config into a
+        // Describes what bind groups the scene pipeline expects
+        let scene_pipeline_layout = scene::create_pipeline_layout(&device, camera_transform_layout);
+
+        // Bake the shader stages, layout, and config into an
         // immutable pipeline object
-        let render_pipeline = pipeline::create_render_pipeline(
+        let scene_pipeline = scene::create_pipeline(
             &device,
-            &shader_module,
-            &pipeline_layout,
+            &scene_shader_module,
+            &scene_pipeline_layout,
             surface_format,
-            depth::DEPTH_FORMAT,
+            textures::DEPTH_FORMAT,
         );
+
+        // Create the post-process pipeline and bind the scene texture to it
+        let post = post::PostProcess::new(&device, &post_shader_module, surface_format, &scene_view);
 
         // Store the wgpu context
         self.wgpu_context = Some(WgpuContext {
@@ -152,7 +168,9 @@ impl ApplicationHandler for App {
             num_vertices: vertices.len(),
             camera_transform,
             depth_view,
-            render_pipeline,
+            scene_view,
+            scene_pipeline,
+            post,
         });
     }
 
@@ -167,13 +185,34 @@ impl ApplicationHandler for App {
 
             // Handle window resize event
             WindowEvent::Resized(size) => {
+                // A minimised window reports a size of zero, which wgpu
+                // can't configure a surface or create textures for
+                if size.width == 0 || size.height == 0 {
+                    return;
+                }
+
                 if let Some(wgpu_context) = &mut self.wgpu_context {
                     wgpu_context.surface_config.width = size.width;
                     wgpu_context.surface_config.height = size.height;
                     wgpu_context
                         .surface
                         .configure(&wgpu_context.device, &wgpu_context.surface_config);
-                    wgpu_context.depth_view = create_depth_view(&wgpu_context.device, size.width, size.height)
+
+                    // Recreate the textures sized to the surface
+                    wgpu_context.depth_view =
+                        textures::create_depth_view(&wgpu_context.device, size.width, size.height);
+                    wgpu_context.scene_view = textures::create_scene_view(
+                        &wgpu_context.device,
+                        wgpu_context.surface_config.format,
+                        size.width,
+                        size.height,
+                    );
+
+                    // The post bind group points at the old scene view, so
+                    // rebind it to the new one
+                    wgpu_context
+                        .post
+                        .set_scene_view(&wgpu_context.device, &wgpu_context.scene_view);
                 }
             }
 
@@ -197,7 +236,7 @@ impl ApplicationHandler for App {
 
                     // Render passes need a view, not the raw texture, so create
                     // one covering the whole thing
-                    let colour_view = surface_texture
+                    let surface_view = surface_texture
                         .texture
                         .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -207,13 +246,14 @@ impl ApplicationHandler for App {
                         .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-                    // Start the draw commands
+                    // Scene pass: draw the lit mesh into the offscreen scene
+                    // texture
                     {
                         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             // Color attachments define what we are rendering to
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                // This view we created is the target
-                                view: &colour_view,
+                                // The offscreen scene texture is the target
+                                view: &wgpu_context.scene_view,
 
                                 // 3D-texture layer and multisample-resolve target - not used here
                                 depth_slice: None,
@@ -224,12 +264,10 @@ impl ApplicationHandler for App {
                                 ops: wgpu::Operations {
                                     // Load operation clears the attachment to a specific color before
                                     // rendering
-                                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                                        r: 0.02,
-                                        g: 0.02,
-                                        b: 0.03,
-                                        a: 1.0,
-                                    }),
+                                    // Pure black, so the background has zero
+                                    // luminance and the dither leaves it fully
+                                    // in the dark colour
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
 
                                     // Store operation saves the rendered content to the attachment
                                     // after rendering
@@ -254,7 +292,7 @@ impl ApplicationHandler for App {
                         });
 
                         // Bind the pipeline,
-                        render_pass.set_pipeline(&wgpu_context.render_pipeline);
+                        render_pass.set_pipeline(&wgpu_context.scene_pipeline);
 
                         // Bind the vertex buffer to slot 0
                         render_pass.set_vertex_buffer(0, wgpu_context.vertex_buffer.slice(..));
@@ -273,6 +311,35 @@ impl ApplicationHandler for App {
                         // Draw every vertex in the buffer as a non-indexed
                         // triangle list (one instance)
                         render_pass.draw(0..wgpu_context.num_vertices as u32, 0..1);
+                    }
+
+                    // Post pass: draw the scene texture to the surface with
+                    // one fullscreen triangle
+                    {
+                        let mut post_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                // The surface is the target
+                                view: &surface_view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    // Every pixel is overwritten, so clear rather than load
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: StoreOp::Store,
+                                },
+                            })],
+
+                            // No depth in this pass, set other fields to default
+                            ..Default::default()
+                        });
+
+                        // Bind the pipeline and the scene texture it reads
+                        post_pass.set_pipeline(&wgpu_context.post.pipeline);
+                        post_pass.set_bind_group(0, &wgpu_context.post.bind_group, &[]);
+
+                        // Three vertices, no vertex buffer: the vertex shader
+                        // builds the triangle from the vertex index
+                        post_pass.draw(0..3, 0..1);
                     }
 
                     // Submit the recorded commands to the GPU queue

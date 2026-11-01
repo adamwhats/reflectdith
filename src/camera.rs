@@ -13,7 +13,7 @@ use wgpu::{
 // Constants
 const ROT_VEL: f32 = 0.5;
 // Meshes are loaded centred on the origin and scaled to fit a unit sphere
-const EYE: Vec3 = Vec3::new(0.0, 1.0, 4.0);
+const EYE: Vec3 = Vec3::new(0.0, 1.0, 2.0);
 const FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
 const NEAR: f32 = 0.1;
 const FAR: f32 = 100.0;

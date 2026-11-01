@@ -2,7 +2,8 @@
 // to_light points from the surface towards the light, in world space
 const to_light: vec3<f32> = normalize(vec3<f32>(1.0, 1.0, 1.0));
 const light_colour: vec3<f32> = vec3<f32>(1.0, 1.0, 1.0);
-const albedo_colour: vec3<f32> = vec3<f32>(0.7, 0.05, 0.6);
+// Grey, as the colour comes from the palette in the post pass
+const albedo_colour: vec3<f32> = vec3<f32>(0.8, 0.8, 0.8);
 const ambient_amount: f32 = 0.1;
 const shininess: f32 = 32;
 const specular_strength: f32 = 0.5;
