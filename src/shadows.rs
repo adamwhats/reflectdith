@@ -7,7 +7,11 @@ use glam::{
 use std::cell::Cell;
 use wgpu::util::DeviceExt;
 
-const MAP_SIZE: u32 = 2048;
+// With the frustum fitted to the default floor fade, this is slightly finer per
+// world unit than 2048 texels over the full 8-unit frustum, at 56% of the texels
+const MAP_SIZE: u32 = 1536;
+// Half the width of the light's view in world units, at most
+const MAX_HALF_EXTENT: f32 = 4.;
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
@@ -158,8 +162,11 @@ impl Shadows {
                 compilation_options: Default::default(),
                 buffers: &[Some(crate::vertices::buffer_layout())],
             },
+            // Front faces are nearest the light on closed meshes, so back
+            // faces never win the depth test; culling them halves the fill.
+            // The scene pass culls back faces too, so meshes are wound alike
             primitive: wgpu::PrimitiveState {
-                cull_mode: None,
+                cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -196,7 +203,11 @@ impl Shadows {
         let centre = floor + Vec3::Y;
         let direction = camera.to_light.truncate().normalize();
         let view = look_at_mat4(centre + direction * 12., centre, Vec3::Y);
-        let projection = directx::orthographic(-4., 4., -4., 4., 0.1, 30.);
+        // The floor is black past its fade end, so shadows there are never
+        // seen. Floor points within it are at most this far from the centre,
+        // which is a unit above the floor
+        let half = (camera.floor.z * camera.floor.z + 1.).sqrt().min(MAX_HALF_EXTENT);
+        let projection = directx::orthographic(-half, half, -half, half, 0.1, 30.);
         let uniform = ShadowUniform {
             light_view_proj: projection * view,
             settings: Vec4::new(strength, 0., 0., 0.),

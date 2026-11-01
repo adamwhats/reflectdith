@@ -5,20 +5,30 @@ joint origins and axes, reuses forward-kinematics buffers, and traverses TF tree
 without allocating frame-name maps. The GUI refreshes its robot catalog when the
 catalog changes, rather than cloning it every frame.
 
-Identical visual geometry shares CPU data and GPU buffers. Meshes use exact
-position/normal indexing when it reduces storage. The shadow pass also shares
-vertices across normal seams, since depth depends only on position. This keeps
-triangle positions, order, winding, and hard surface normals intact.
+Identical visual geometry shares CPU data and GPU buffers. Meshes are indexed
+when it reduces storage. Normals are interpolated flat from each triangle's
+first vertex, so only that corner needs its exact normal; the other two corners
+reuse any vertex at the same position. This shares vertices across normal seams
+and cuts vertex shading about threefold on large robots. The shadow pass also
+shares vertices across normal seams, since depth depends only on position.
+Triangle positions, order, winding, and hard surface normals stay intact.
 
 Shadow maps are reused until the light, floor origin, robot geometry/pose, mesh
 rotation, or selected view changes. Moving the camera or editing the palette
-can reuse the same map. Floor pixels beyond the fade radius skip noise and
-shadow sampling. The finite dither palette is gamma-interpolated on the CPU
-when edited, avoiding repeated colour interpolation powers per pixel.
+can reuse the same map. The 1536² map covers only the lit floor, up to the fade
+end, capped at ±4 units. The shadow pass culls back faces, which assumes closed,
+consistently wound meshes. Shadow filtering uses four bilinear depth-compare
+taps, which reproduce the weights of a 3×3 grid of nine.
 
-Development builds optimize the application, egui/epaint, and wgpu-core while
-retaining debug symbols. The first build of these dependencies takes longer;
-subsequent application builds reuse them.
+Floor pixels beyond the fade radius skip noise and shadow sampling. The finite
+dither palette is gamma-interpolated on the CPU when edited, avoiding repeated
+colour interpolation powers per pixel. The dither threshold is computed from
+pixel coordinate bits rather than read from an 8×8 table.
+
+Development builds optimize every dependency at level 2 (wgpu and its Vulkan
+layer, egui, glam, the ROS bindings) and the application at level 1, while
+retaining debug symbols. The first build of a target directory takes about
+eight minutes; subsequent application builds reuse the dependencies.
 
 ## Measurements
 
@@ -54,6 +64,31 @@ reconstruction, TF tree traversal, independent visual origins with shared
 geometry, shadow invalidation, palette interpolation, and live ROS subscription
 switching.
 
+### Go2, per pass
+
+Measured on the same Intel GPU with a live Unitree Go2 (about 400k triangles)
+over ROS. Another viewer shared the GPU, so the table gives medians over 600
+frames.
+
+| p50 | Before | After |
+| --- | ---: | ---: |
+| Frame work | 8.5–9.8 ms | 5.4 ms |
+| GPU shadow pass | 1.6 ms | 0.8 ms |
+| GPU scene pass | 3.1 ms | 1.3–1.6 ms |
+| GPU post pass | ~0.5 ms | ~0.34 ms |
+| CPU preparation | 0.81 ms | 0.51 ms |
+| CPU command encoding | 1.05 ms | 0.63 ms |
+| Robot GPU memory | 15.7 MiB | 10.3 MiB |
+
+The fitted, smaller shadow map gave the largest scene-pass saving. On this GPU,
+reading a depth map rendered earlier in the same frame cost about 1 ms that
+scaled with map area. On an NVIDIA RTX PRO 500 every pass took 0.03 ms or less.
+
+A frozen teapot render was pixel-identical after the indexing, shadow filter and
+dither threshold changes. A GPU test renders a mesh with and without indexing
+and requires identical pixels. The fitted shadow map is sharper at the default
+fade end, and up to 25% coarser when the fade end is above about 2.9.
+
 ## Reproduce
 
 ```sh
@@ -68,7 +103,8 @@ cargo run --locked -- --benchmark-frames 600
 ```
 
 Benchmark mode waits for GPU completion each frame, reports mean/p50/p95 timings,
-and exits cleanly. Normal rendering does not perform that GPU wait. Use
+and exits cleanly. If the GPU supports timestamp queries, it also reports the
+shadow, scene, post and GUI passes separately as `BENCH gpu_*` lines. Normal rendering does not perform that GPU wait. Use
 `--hide-gui` or `--no-shadows` to measure those configurations separately, and
 compare runs with matching scene, pose, window size, and settings.
 

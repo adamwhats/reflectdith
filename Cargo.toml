@@ -24,23 +24,11 @@ stl_io = "0.11.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
 
-# Keep large Collada assets practical in the prototype's debug builds.
-[profile.dev.package.mesh-loader]
+# The launcher runs development builds. Optimize every dependency, including
+# wgpu, its Vulkan layer, glam and the ROS bindings, while retaining debug
+# symbols. The first build takes longer; application rebuilds are unaffected.
+[profile.dev.package."*"]
 opt-level = 2
 
-[profile.dev.package.roxmltree]
-opt-level = 2
-
-# The launcher runs development builds. Optimize the render/UI hot paths while
-# retaining debug symbols and keeping dependency rebuilds limited.
 [profile.dev.package.reflecdith]
-opt-level = 1
-
-[profile.dev.package.egui]
-opt-level = 2
-
-[profile.dev.package.epaint]
-opt-level = 2
-
-[profile.dev.package.wgpu-core]
 opt-level = 1
