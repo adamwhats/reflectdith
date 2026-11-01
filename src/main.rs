@@ -117,6 +117,8 @@ struct WgpuContext {
     gui: gui::Gui,
     // Measures GPU time per frame, when the adapter supports timestamps
     gpu_timer: Option<stats::GpuTimer>,
+    // Per-pass GPU timings, in benchmark mode when timestamps are supported
+    pass_timer: Option<benchmark::PassTimer>,
 }
 
 impl WgpuContext {
@@ -323,6 +325,9 @@ impl WgpuContext {
         depth_view: &TextureView,
     ) {
         self.encode_shadow_pass(encoder);
+        if let Some(timer) = &self.pass_timer {
+            timer.mark(encoder, 1);
+        }
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             // Color attachments define what we are rendering to
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -479,6 +484,10 @@ impl ApplicationHandler for App {
         }))
         .expect("Failed to request device");
         let gpu_timer = stats::GpuTimer::new(&device, &queue);
+        let pass_timer = self
+            .options
+            .benchmark_frames
+            .and_then(|_| benchmark::PassTimer::new(&device, &queue));
 
         let size = self.window.as_ref().unwrap().inner_size();
         let surface_caps = surface.get_capabilities(&adapter);
@@ -631,6 +640,7 @@ impl ApplicationHandler for App {
             post,
             gui,
             gpu_timer,
+            pass_timer,
         });
     }
 
@@ -906,13 +916,22 @@ impl ApplicationHandler for App {
                     if let Some(timer) = &mut wgpu_context.gpu_timer {
                         timer.begin(&mut encoder);
                     }
+                    if let Some(timer) = &wgpu_context.pass_timer {
+                        timer.mark(&mut encoder, 0);
+                    }
 
                     // Scene pass: draw the lit mesh into the offscreen scene
                     // texture
                     wgpu_context.encode_scene_pass(&mut encoder, &wgpu_context.scene_view, &wgpu_context.depth_view);
 
                     // Post pass: dither the scene texture into the surface
+                    if let Some(timer) = &wgpu_context.pass_timer {
+                        timer.mark(&mut encoder, 2);
+                    }
                     wgpu_context.encode_post_pass(&mut encoder, &wgpu_context.post.bind_group, &surface_view);
+                    if let Some(timer) = &wgpu_context.pass_timer {
+                        timer.mark(&mut encoder, 3);
+                    }
 
                     // Menu pass: draw the side menu over the dithered image
                     wgpu_context.gui.draw(
@@ -924,6 +943,10 @@ impl ApplicationHandler for App {
                         gui_output,
                     );
 
+                    if let Some(timer) = &wgpu_context.pass_timer {
+                        timer.mark(&mut encoder, 4);
+                        timer.resolve(&mut encoder);
+                    }
                     if let Some(timer) = &mut wgpu_context.gpu_timer {
                         timer.end(&mut encoder);
                     }
@@ -939,11 +962,14 @@ impl ApplicationHandler for App {
                             .device
                             .poll(wgpu::PollType::wait_indefinitely())
                             .expect("Benchmark GPU wait failed");
-                        if benchmark.record(
-                            prepare_time,
-                            encode_time,
-                            prepare_time + encode_time + gpu_wait_start.elapsed(),
-                        ) {
+                        let gpu_wait = gpu_wait_start.elapsed();
+                        if let Some(timer) = &mut wgpu_context.pass_timer {
+                            timer.read(&wgpu_context.device);
+                        }
+                        if benchmark.record(prepare_time, encode_time, prepare_time + encode_time + gpu_wait) {
+                            if let Some(timer) = &wgpu_context.pass_timer {
+                                timer.report();
+                            }
                             eprintln!(
                                 "BENCH shadow_maps_rendered={} (including warmup)",
                                 wgpu_context.shadows.rendered_maps.get()

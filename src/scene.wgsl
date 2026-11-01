@@ -42,13 +42,29 @@ fn surface_visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     let ndc = clip.xyz / clip.w;
     if any(abs(ndc.xy) > vec2<f32>(1.0)) || ndc.z < 0.0 || ndc.z > 1.0 { return 1.0; }
     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-    let texel = 1.0 / vec2<f32>(textureDimensions(shadow_map));
-    var visibility = 0.0;
-    for (var y = -1; y <= 1; y += 1) {
-        for (var x = -1; x <= 1; x += 1) {
-            visibility += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + vec2<f32>(f32(x), f32(y)) * texel, ndc.z - 0.0002);
-        }
-    }
+    // A 3x3 grid of bilinear comparison taps, one texel apart, weights the
+    // 4x4 texels around the receiver by [1 - f, 1, 1, f] in each axis, where f
+    // is its position between texel centres. Two bilinear taps per axis give
+    // exactly the same weights: one over the first texel pair, placed and
+    // weighted for (1 - f, 1), and one over the second for (1, f).
+    let size = vec2<f32>(textureDimensions(shadow_map));
+    let texel_position = uv * size - 0.5;
+    let base = floor(texel_position);
+    let f = texel_position - base;
+    let first_weight = 2.0 - f;
+    let second_weight = 1.0 + f;
+    // Back from texel units to coordinates, which put texel centres at + 0.5
+    let first = (base - 0.5 + 1.0 / first_weight) / size;
+    let second = (base + 1.5 + f / second_weight) / size;
+    let depth = ndc.z - 0.0002;
+    let visibility = first_weight.x * first_weight.y
+        * textureSampleCompareLevel(shadow_map, shadow_sampler, first, depth)
+        + second_weight.x * first_weight.y
+        * textureSampleCompareLevel(shadow_map, shadow_sampler, vec2<f32>(second.x, first.y), depth)
+        + first_weight.x * second_weight.y
+        * textureSampleCompareLevel(shadow_map, shadow_sampler, vec2<f32>(first.x, second.y), depth)
+        + second_weight.x * second_weight.y
+        * textureSampleCompareLevel(shadow_map, shadow_sampler, second, depth);
     return mix(1.0, visibility / 9.0, shadow.settings.x);
 }
 

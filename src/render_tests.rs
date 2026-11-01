@@ -362,3 +362,113 @@ fn floor_shadow_and_fade_are_constant_inside_each_world_noise_cell() {
         assert!(cells.values().filter(|(_, count)| *count > 1).count() > 20);
     }
 }
+
+#[test]
+#[ignore = "requires a working GPU adapter"]
+fn first_vertex_indexing_renders_mesh_identically() {
+    let (device, queue) = gpu();
+    let camera_layout = camera::create_camera_transform_bind_group_layout(&device);
+    let noise_layout = post::PostProcess::world_noise_layout(&device);
+    // New shadows have zero strength, so lighting does not read the map
+    let shadows = shadows::Shadows::new(&device, &camera_layout);
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+    });
+    let layout = scene::create_pipeline_layout(&device, &camera_layout, &noise_layout, &shadows.scene_layout);
+    let pipeline = scene::create_pipeline(
+        &device,
+        &shader,
+        &layout,
+        textures::SCENE_FORMAT,
+        textures::DEPTH_FORMAT,
+        "fragment_main",
+        Some(wgpu::Face::Back),
+    );
+    let camera = camera::camera_uniform(&camera::Orbit::default(), 37., 52., &camera::Shading::default(), 1., 0.);
+    let camera_group = camera::CameraTransform::new(&device, &camera_layout, bytemuck::bytes_of(&camera));
+    let noise = device.create_texture_with_data(
+        &queue,
+        &wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &[128],
+    );
+    let noise_view = noise.create_view(&Default::default());
+    let noise_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &noise_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&noise_view),
+        }],
+    });
+
+    let source = vertices::from_stl(std::path::Path::new("models/utah_teapot_low.stl"));
+    let unindexed = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&source),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let mesh = vertices::upload(&device, &source);
+    assert!(
+        mesh.gpu_bytes() < std::mem::size_of_val(source.as_slice()) as u64,
+        "the teapot must take the indexed path for this test to mean anything"
+    );
+
+    let output = target(&device, textures::SCENE_FORMAT);
+    let view = output.create_view(&Default::default());
+    let depth = textures::create_depth_view(&device, SIZE, SIZE);
+    let mut images = Vec::new();
+    for indexed in [false, true] {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &camera_group.bind_group, &[]);
+            pass.set_bind_group(1, &noise_group, &[]);
+            pass.set_bind_group(2, &shadows.scene_group, &[]);
+            if indexed {
+                mesh.draw(&mut pass);
+            } else {
+                pass.set_vertex_buffer(0, unindexed.slice(..));
+                pass.draw(0..source.len() as u32, 0..1);
+            }
+        }
+        queue.submit(Some(encoder.finish()));
+        images.push(read_pixels(&device, &queue, &output, 8));
+    }
+    assert!(images[0].iter().any(|byte| *byte != 0), "the teapot must be in view");
+    assert_eq!(images[0], images[1]);
+}

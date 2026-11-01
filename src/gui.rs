@@ -331,7 +331,9 @@ impl Gui {
                         ui.separator();
 
                         ui.heading("Floor");
-                        value_slider(ui, "Brightness", &mut shading.floor_brightness, 0.0..=1.0, 2, "");
+                        // Lit floor peaks at about 0.68 x brightness at the centre, so the
+                        // range runs past 1.0 to reach the light tone there
+                        value_slider(ui, "Brightness", &mut shading.floor_brightness, 0.0..=2.0, 2, "");
                         value_slider(ui, "Fade start", &mut shading.floor_fade_start, 0.0..=6.0, 1, "");
                         value_slider(
                             ui,
@@ -376,17 +378,14 @@ impl Gui {
                             ui.label("Light");
                             ui.color_edit_button_rgb(&mut palette.light);
                         });
-                        // Three equal-width buttons spanning the menu
-                        ui.columns(3, |columns| {
+                        // Two equal-width buttons spanning the menu
+                        ui.columns(2, |columns| {
                             let size = [columns[0].available_width(), columns[0].spacing().interact_size.y];
                             if columns[0].add_sized(size, egui::Button::new("Random")).clicked() {
                                 *palette = Palette::random_muted();
                             }
                             if columns[1].add_sized(size, egui::Button::new("Swap")).clicked() {
                                 std::mem::swap(&mut palette.dark, &mut palette.light);
-                            }
-                            if columns[2].add_sized(size, egui::Button::new("Reset")).clicked() {
-                                *palette = Palette::default();
                             }
                         });
                         ui.separator();

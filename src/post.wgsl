@@ -8,18 +8,18 @@ const clip_vertices = array<vec2<f32>, 3>(
     vec2<f32>(-1.0, 3.0),
 );
 
-// 8x8 Bayer matrix, stored row by row. Each value is a rank from 0 to 63, so
-// dividing by 64 gives a threshold which is spread evenly over the pattern
-const bayer = array<u32, 64>(
-    0u, 32u, 8u, 40u, 2u, 34u, 10u, 42u,
-    48u, 16u, 56u, 24u, 50u, 18u, 58u, 26u,
-    12u, 44u, 4u, 36u, 14u, 46u, 6u, 38u,
-    60u, 28u, 52u, 20u, 62u, 30u, 54u, 22u,
-    3u, 35u, 11u, 43u, 1u, 33u, 9u, 41u,
-    51u, 19u, 59u, 27u, 49u, 17u, 57u, 25u,
-    15u, 47u, 7u, 39u, 13u, 45u, 5u, 37u,
-    63u, 31u, 55u, 23u, 61u, 29u, 53u, 21u,
-);
+// Rank from 0 to 63 of a cell in the 8x8 Bayer matrix, so dividing by 64
+// gives a threshold spread evenly over the pattern. Built from the bits of x
+// and y rather than indexing a constant array, which would need a per-pixel
+// copy into a local variable. The first rows are:
+//   0 32  8 40  2 34 10 42
+//  48 16 56 24 50 18 58 26
+//  12 44  4 36 14 46  6 38
+fn bayer_rank(x: u32, y: u32) -> u32 {
+    let z = x ^ y;
+    return ((z & 1u) << 5u) | ((y & 1u) << 4u) | ((z & 2u) << 2u) | ((y & 2u) << 1u) | ((z & 4u) >> 1u)
+        | ((y & 4u) >> 2u);
+}
 
 // Tones for the dithering and the dither cell size, mirrors PostUniform in
 // post.rs
@@ -77,12 +77,10 @@ fn fragment_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f3
     let luminance = pow(min(linear_luminance, 1.0), 1.0 / 2.2);
 
     // Look up this pixel's threshold from the Bayer matrix, which tiles every
-    // 8 pixels in x and y. Indexing with a runtime value needs a variable, so
-    // copy the constant array into one
-    var bayer_local = bayer;
+    // 8 pixels in x and y
     let x = u32(bayer_cell.x) % 8u;
     let y = u32(bayer_cell.y) % 8u;
-    let bayer_threshold = (f32(bayer_local[y * 8u + x]) + 0.5) / 64.0;
+    let bayer_threshold = (f32(bayer_rank(x, y)) + 0.5) / 64.0;
 
     // The floor supplies a negative world-space blue-noise threshold in alpha.
     // Mesh alpha is 1 and retains the original screen-space Bayer pattern.

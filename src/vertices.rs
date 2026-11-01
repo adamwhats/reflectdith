@@ -87,7 +87,7 @@ pub fn create_floor_buffer(device: &Device) -> wgpu::Buffer {
 }
 
 // Load the vertex data from an STL file
-fn from_stl(file_path: &Path) -> Vec<Vertex> {
+pub(crate) fn from_stl(file_path: &Path) -> Vec<Vertex> {
     // Read the STL file into a mesh object
     let mut file = std::fs::File::open(file_path).expect(&format!("Failed to open STL file: {}", file_path.display()));
     let mesh = stl_io::read_stl(&mut file).expect(&format!("Failed to read STL file: {}", file_path.display()));
@@ -149,26 +149,31 @@ pub fn buffer_layout<'a>() -> wgpu::VertexBufferLayout<'a> {
     }
 }
 
-// Deduplicate only bit-identical position/normal pairs, preserving hard edges,
-// triangle order, and authored coordinates. Indexing is used only if it saves bytes.
+// The scene shader interpolates normals flat, which takes each triangle's
+// normal from its first vertex only. So the first corner keeps a vertex with
+// its exact normal, while the other two may share any vertex at the same
+// position. With hard normals this runs the vertex shader about once per
+// triangle instead of three times, and renders identically: positions and
+// triangle order are unchanged. Indexing is used only if it saves bytes.
 fn indexed_geometry(vertices: &[Vertex]) -> Option<(Vec<Vertex>, Vec<u32>)> {
-    let mut seen = HashMap::with_capacity(vertices.len());
+    let mut exact = HashMap::with_capacity(vertices.len());
+    // The most recently used vertex at each position, for vertex cache hits
+    let mut at_position = HashMap::with_capacity(vertices.len());
     let mut unique = Vec::new();
     let mut indices = Vec::with_capacity(vertices.len());
-    for vertex in vertices {
-        let key = [
-            vertex.position[0].to_bits(),
-            vertex.position[1].to_bits(),
-            vertex.position[2].to_bits(),
-            vertex.normal[0].to_bits(),
-            vertex.normal[1].to_bits(),
-            vertex.normal[2].to_bits(),
-        ];
-        let index = *seen.entry(key).or_insert_with(|| {
-            let index = u32::try_from(unique.len()).expect("Mesh exceeds u32 vertex indices");
-            unique.push(*vertex);
-            index
+    for (corner, vertex) in vertices.iter().enumerate() {
+        let position = vertex.position.map(f32::to_bits);
+        let shared = (corner % 3 != 0).then(|| at_position.get(&position).copied()).flatten();
+        let index = shared.unwrap_or_else(|| {
+            *exact
+                .entry((position, vertex.normal.map(f32::to_bits)))
+                .or_insert_with(|| {
+                    let index = u32::try_from(unique.len()).expect("Mesh exceeds u32 vertex indices");
+                    unique.push(*vertex);
+                    index
+                })
         });
+        at_position.insert(position, index);
         indices.push(index);
     }
     (unique.len() * std::mem::size_of::<Vertex>() + indices.len() * 4 < std::mem::size_of_val(vertices))
@@ -255,7 +260,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn indexing_preserves_triangles_and_distinct_normals_exactly() {
+    fn indexing_preserves_positions_and_first_corner_normals_exactly() {
         let a = Vertex {
             position: [0., 0., 0.],
             normal: [0., 0., 1.],
@@ -272,14 +277,18 @@ mod tests {
             normal: [0., 1., 0.],
             ..a
         };
-        let vertices = [a, b, c, a, b, c, hard_edge, b, c];
+        // The third triangle's other corners share the first two triangles'
+        // vertices even though their normals differ
+        let vertices = [a, b, c, a, b, c, hard_edge, b, c, b, hard_edge, c];
         let (unique, indices) = indexed_geometry(&vertices).unwrap();
         assert_eq!(unique.len(), 4);
-        let reconstructed: Vec<_> = indices.iter().map(|i| unique[*i as usize]).collect();
-        assert_eq!(
-            bytemuck::cast_slice::<_, u8>(&reconstructed),
-            bytemuck::cast_slice::<_, u8>(&vertices)
-        );
+        for (corner, (source, index)) in vertices.iter().zip(&indices).enumerate() {
+            let stored = unique[*index as usize];
+            assert_eq!(source.position.map(f32::to_bits), stored.position.map(f32::to_bits));
+            if corner % 3 == 0 {
+                assert_eq!(source.normal.map(f32::to_bits), stored.normal.map(f32::to_bits));
+            }
+        }
         assert!(indexed_geometry(&[a, b, c]).is_none());
         let shadow = shadow_indices(&unique, Some(&indices), vertices.len()).unwrap();
         for (source, index) in vertices.iter().zip(shadow) {
