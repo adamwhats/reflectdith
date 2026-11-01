@@ -1,4 +1,5 @@
 mod camera;
+mod gui;
 mod post;
 mod scene;
 mod textures;
@@ -60,6 +61,8 @@ struct WgpuContext {
     // The pipeline and bind group for the pass which draws the scene texture
     // to the surface
     post: post::PostProcess,
+    // The side menu for editing the palette
+    gui: gui::Gui,
 }
 
 impl ApplicationHandler for App {
@@ -158,6 +161,9 @@ impl ApplicationHandler for App {
         // Create the post-process pipeline and bind the scene texture to it
         let post = post::PostProcess::new(&device, &post_shader_module, surface_format, &scene_view);
 
+        // Create the side menu, drawn straight to the surface
+        let gui = gui::Gui::new(&device, self.window.as_ref().unwrap(), surface_format);
+
         // Store the wgpu context
         self.wgpu_context = Some(WgpuContext {
             device,
@@ -171,10 +177,16 @@ impl ApplicationHandler for App {
             scene_view,
             scene_pipeline,
             post,
+            gui,
         });
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: winit::window::WindowId, event: WindowEvent) {
+        // Let the side menu see every event first, for mouse and keyboard input
+        if let (Some(window), Some(wgpu_context)) = (&self.window, &mut self.wgpu_context) {
+            wgpu_context.gui.on_window_event(window, &event);
+        }
+
         // Any window event will initiate this match statement, allowing us to
         // handle specific events
         match event {
@@ -218,7 +230,16 @@ impl ApplicationHandler for App {
 
             // Main render task
             WindowEvent::RedrawRequested => {
-                if let Some(wgpu_context) = &self.wgpu_context {
+                if let Some(wgpu_context) = &mut self.wgpu_context {
+                    let window = self.window.as_ref().unwrap();
+
+                    // Lay out the side menu first, so any palette change is
+                    // uploaded in time for this frame's post pass
+                    let gui_output = wgpu_context.gui.run(window);
+                    wgpu_context
+                        .post
+                        .write_palette(&wgpu_context.queue, &wgpu_context.gui.palette);
+
                     // Acquire the next frame for rendering
                     let frame = wgpu_context.surface.get_current_texture();
 
@@ -342,6 +363,16 @@ impl ApplicationHandler for App {
                         post_pass.draw(0..3, 0..1);
                     }
 
+                    // Menu pass: draw the side menu over the dithered image
+                    wgpu_context.gui.draw(
+                        &wgpu_context.device,
+                        &wgpu_context.queue,
+                        &mut encoder,
+                        &surface_view,
+                        [wgpu_context.surface_config.width, wgpu_context.surface_config.height],
+                        gui_output,
+                    );
+
                     // Submit the recorded commands to the GPU queue
                     wgpu_context.queue.submit(Some(encoder.finish()));
                     wgpu_context.queue.present(surface_texture);
@@ -351,10 +382,7 @@ impl ApplicationHandler for App {
                     let since_last_update = self.fps_last_update.elapsed();
                     if since_last_update >= Duration::from_secs(1) {
                         let fps = self.fps_frame_count as f32 / since_last_update.as_secs_f32();
-                        self.window
-                            .as_ref()
-                            .unwrap()
-                            .set_title(&format!("ReflecDith - {:.0} FPS", fps));
+                        window.set_title(&format!("ReflecDith - {:.0} FPS", fps));
                         self.fps_frame_count = 0;
                         self.fps_last_update = Instant::now();
                     }
@@ -370,7 +398,7 @@ impl ApplicationHandler for App {
                     }
 
                     // Trigger the next redraw
-                    self.window.as_ref().unwrap().request_redraw();
+                    window.request_redraw();
                 }
             }
             // Fall through for other events

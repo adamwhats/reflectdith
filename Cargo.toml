@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 bytemuck = "1.25.2"
+egui = "0.37.0"
+egui-wgpu = "0.37.0"
+egui-winit = "0.37.0"
 env_logger = "0.11.11"
 glam = { version = "0.33.7", features = ["bytemuck"] }
 pollster = "1.0.1"

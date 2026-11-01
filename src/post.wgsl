@@ -21,13 +21,18 @@ const bayer = array<u32, 64>(
     63u, 31u, 55u, 23u, 61u, 29u, 53u, 21u,
 );
 
-// Tones for the dithering
-const dark_colour: vec3<f32> = vec3<f32>(0.002, 0.0, 0.01);
-const light_colour: vec3<f32> = vec3<f32>(1.0, 0.15, 0.6);
+// Tones for the dithering, mirrors PaletteUniform in post.rs
+struct Palette {
+    dark: vec4<f32>,
+    light: vec4<f32>,
+};
 
 // The offscreen image the scene was rendered into
 @group(0) @binding(0)
 var scene: texture_2d<f32>;
+
+@group(0) @binding(1)
+var<uniform> palette: Palette;
 
 // Vertex shader entry point
 // There are no vertex buffers, the position comes from the vertex index alone
@@ -73,6 +78,6 @@ fn fragment_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f3
     // Pixels brighter than their threshold take the light colour, the rest
     // take the dark colour
     let dithered = select(0.0, 1.0, luminance > threshold);
-    let output_colour = mix(dark_colour, light_colour, dithered);
+    let output_colour = mix(palette.dark.rgb, palette.light.rgb, dithered);
     return vec4<f32>(output_colour, 1.0);
 }
