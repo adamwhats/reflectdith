@@ -24,7 +24,7 @@ pub struct MeshScene {
     angle: f32,
     speed: f32,
     // Changed whenever the mesh is reloaded or turns, for the shadow cache
-    revision: u64,
+    shadow_revision: u64,
 }
 
 // The name shown in the dropdown for a model file
@@ -49,7 +49,7 @@ impl MeshScene {
             mesh,
             angle: 0.0,
             speed: camera::ROT_VEL.to_degrees(),
-            revision: 0,
+            shadow_revision: 0,
         }
     }
 }
@@ -60,12 +60,12 @@ impl Scene for MeshScene {
         if self.selected_model != self.loaded_model {
             self.mesh = vertices::create_mesh(ctx.device, &self.models[self.selected_model]);
             self.loaded_model = self.selected_model;
-            self.revision += 1;
+            self.shadow_revision += 1;
         }
         let angle = (self.angle + self.speed * dt).rem_euclid(360.0);
         if angle != self.angle {
             self.angle = angle;
-            self.revision += 1;
+            self.shadow_revision += 1;
         }
     }
 
@@ -80,7 +80,7 @@ impl Scene for MeshScene {
     }
 
     fn shadow_revision(&self) -> u64 {
-        self.revision
+        self.shadow_revision
     }
 
     fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {

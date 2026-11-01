@@ -40,7 +40,7 @@ pub struct RobotScene {
     view: Option<model::RobotView>,
     // Changed whenever the robot is loaded, removed or moves, for the shadow
     // cache, and the geometry's pose revision when it last moved
-    revision: u64,
+    shadow_revision: u64,
     last_pose: u64,
     // The robot and topic picker, once the worker has reported a selection,
     // and the status line shown under it
@@ -62,7 +62,7 @@ impl RobotScene {
             connection: startup.connection,
             generation: 0,
             view: None,
-            revision: 0,
+            shadow_revision: 0,
             last_pose: 0,
             topics: None,
             status,
@@ -80,7 +80,7 @@ impl RobotScene {
             let state = self.live.lock().unwrap();
             if self.generation != state.generation {
                 if self.options.urdf.is_none() && self.geometry.take().is_some() {
-                    self.revision += 1;
+                    self.shadow_revision += 1;
                 }
                 self.generation = state.generation;
             }
@@ -132,7 +132,7 @@ impl RobotScene {
                         eprintln!("Visual skipped: {warning}");
                     }
                     self.geometry = Some(model::RobotGeometry::new(robot, ctx.device, ctx.camera_layout));
-                    self.revision += 1;
+                    self.shadow_revision += 1;
                 }
                 Err(error) => {
                     self.live.lock().unwrap().error = Some(format!("Description: {error}"));
@@ -245,12 +245,12 @@ impl Scene for RobotScene {
         let pose = geometry.pose_revision.get();
         if pose != self.last_pose {
             self.last_pose = pose;
-            self.revision += 1;
+            self.shadow_revision += 1;
         }
     }
 
     fn shadow_revision(&self) -> u64 {
-        self.revision
+        self.shadow_revision
     }
 
     fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
