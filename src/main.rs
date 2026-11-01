@@ -438,6 +438,13 @@ impl ApplicationHandler for App {
             .with_inner_size(window_size)
             .with_resizable(false);
 
+        // Match the desktop file so Wayland can resolve the launcher and icon.
+        #[cfg(target_os = "linux")]
+        let window_attributes = {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            window_attributes.with_name("reflectdith", "reflectdith")
+        };
+
         // Create a window with the specified attributes
         self.window = Some(Arc::new(
             event_loop
