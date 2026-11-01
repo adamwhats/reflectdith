@@ -192,18 +192,23 @@ impl Shadows {
         }
     }
 
-    pub fn update(&self, queue: &wgpu::Queue, camera: &crate::camera::CameraUniform, floor: Vec3, enabled: bool) {
+    pub fn update(&self, queue: &wgpu::Queue, camera: &crate::camera::CameraUniform, floor: Vec3, strength: f32) {
         let centre = floor + Vec3::Y;
         let direction = camera.to_light.truncate().normalize();
         let view = look_at_mat4(centre + direction * 12., centre, Vec3::Y);
         let projection = directx::orthographic(-4., 4., -4., 4., 0.1, 30.);
         let uniform = ShadowUniform {
             light_view_proj: projection * view,
-            settings: Vec4::new(if enabled { 1. } else { 0. }, 0., 0., 0.),
+            settings: Vec4::new(strength, 0., 0., 0.),
         };
-        if self.last_uniform.replace(Some(uniform)) != Some(uniform) {
-            self.revision.set(self.revision.get().wrapping_add(1));
+        let last = self.last_uniform.replace(Some(uniform));
+        if last != Some(uniform) {
             queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&uniform));
+        }
+        // Only the light's transform changes the depth map; strength is
+        // applied when sampling it
+        if last.map(|last| last.light_view_proj) != Some(uniform.light_view_proj) {
+            self.revision.set(self.revision.get().wrapping_add(1));
         }
     }
     pub fn needs_render(&self, casters: Casters) -> bool {

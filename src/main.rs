@@ -5,6 +5,7 @@ mod robot;
 #[cfg(feature = "ros2")]
 mod ros;
 mod shadows;
+mod stats;
 mod topics;
 use clap::Parser;
 mod blue_noise;
@@ -53,6 +54,7 @@ struct App {
     last_frame_time: Instant,
     fps_frame_count: u32,
     fps_last_update: Instant,
+    usage_stats: stats::UsageStats,
     next_frame_time: Instant,
     // The camera the mouse orbits and zooms
     orbit: camera::Orbit,
@@ -113,6 +115,8 @@ struct WgpuContext {
     post: post::PostProcess,
     // The side menu for editing the palette
     gui: gui::Gui,
+    // Measures GPU time per frame, when the adapter supports timestamps
+    gpu_timer: Option<stats::GpuTimer>,
 }
 
 impl WgpuContext {
@@ -269,7 +273,7 @@ impl WgpuContext {
     // Record the scene pass: draw the lit mesh into the given colour and depth
     // views, which are the same size as each other
     fn encode_shadow_pass(&self, encoder: &mut wgpu::CommandEncoder) {
-        if !self.gui.shading.shadows {
+        if self.gui.shading.shadow_strength <= 0.0 {
             return;
         }
         let casters = if let Some(robot) = self.active_robot() {
@@ -434,7 +438,7 @@ impl ApplicationHandler for App {
 
         // Define window attributes
         let window_attributes = Window::default_attributes()
-            .with_title("ReflecDith")
+            .with_title("ReflecDith - Tab: controls")
             .with_inner_size(window_size)
             .with_resizable(false);
 
@@ -469,8 +473,12 @@ impl ApplicationHandler for App {
             adapter.get_info().name,
             adapter.get_info().backend
         );
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).expect("Failed to request device");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: stats::gpu_timing_features(&adapter),
+            ..Default::default()
+        }))
+        .expect("Failed to request device");
+        let gpu_timer = stats::GpuTimer::new(&device, &queue);
 
         let size = self.window.as_ref().unwrap().inner_size();
         let surface_caps = surface.get_capabilities(&adapter);
@@ -594,7 +602,9 @@ impl ApplicationHandler for App {
             gui.robot_status = Some("Waiting for robot description".into());
         }
         gui.visible = !self.options.hide_gui;
-        gui.shading.shadows = !self.options.no_shadows;
+        if self.options.no_shadows {
+            gui.shading.shadow_strength = 0.0;
+        }
         // Store the wgpu context
         self.wgpu_context = Some(WgpuContext {
             world_noise,
@@ -620,6 +630,7 @@ impl ApplicationHandler for App {
             scene_pipeline,
             post,
             gui,
+            gpu_timer,
         });
     }
 
@@ -859,7 +870,7 @@ impl ApplicationHandler for App {
                         &wgpu_context.queue,
                         &camera_uniform,
                         floor_origin,
-                        wgpu_context.gui.shading.shadows,
+                        wgpu_context.gui.shading.shadow_strength,
                     );
 
                     let prepare_time = benchmark::elapsed(benchmark_start);
@@ -890,6 +901,11 @@ impl ApplicationHandler for App {
                     let mut encoder = wgpu_context
                         .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                    // Fire any finished timestamp readbacks without blocking
+                    let _ = wgpu_context.device.poll(wgpu::PollType::Poll);
+                    if let Some(timer) = &mut wgpu_context.gpu_timer {
+                        timer.begin(&mut encoder);
+                    }
 
                     // Scene pass: draw the lit mesh into the offscreen scene
                     // texture
@@ -908,8 +924,14 @@ impl ApplicationHandler for App {
                         gui_output,
                     );
 
+                    if let Some(timer) = &mut wgpu_context.gpu_timer {
+                        timer.end(&mut encoder);
+                    }
                     // Submit the recorded commands to the GPU queue
                     wgpu_context.queue.submit(Some(encoder.finish()));
+                    if let Some(timer) = &mut wgpu_context.gpu_timer {
+                        timer.submitted();
+                    }
                     let encode_time = benchmark::elapsed(encode_start);
                     if let Some(benchmark) = &mut self.benchmark {
                         let gpu_wait_start = Instant::now();
@@ -931,12 +953,15 @@ impl ApplicationHandler for App {
                     }
                     wgpu_context.queue.present(surface_texture);
 
-                    // Update the FPS counter in the window title once a second
+                    // Update the FPS counter and usage stats overlay once a
+                    // second
                     self.fps_frame_count += 1;
                     let since_last_update = self.fps_last_update.elapsed();
                     if since_last_update >= Duration::from_secs(1) {
                         let fps = self.fps_frame_count as f32 / since_last_update.as_secs_f32();
-                        window.set_title(&format!("ReflecDith - {:.0} FPS | Tab: controls", fps));
+                        wgpu_context.gui.stats_text =
+                            self.usage_stats
+                                .sample(fps, &wgpu_context.device, wgpu_context.gpu_timer.as_mut());
                         self.fps_frame_count = 0;
                         self.fps_last_update = Instant::now();
                     }
@@ -1054,6 +1079,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         last_frame_time: Instant::now(),
         fps_frame_count: 0,
         fps_last_update: Instant::now(),
+        usage_stats: stats::UsageStats::new(),
         next_frame_time: Instant::now(),
         orbit,
         alternate_orbit,

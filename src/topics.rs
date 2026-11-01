@@ -141,27 +141,20 @@ impl TopicPanel {
         } else {
             robot_name(&selected)
         };
-        ui.horizontal(|ui| {
-            ui.label("Robot");
-            egui::ComboBox::from_id_salt("ros_robot")
-                .width(200.)
-                .truncate()
-                .selected_text(label)
-                .show_ui(ui, |ui| {
-                    if !selected.is_empty() && !self.catalog.descriptions.contains(&selected) {
-                        let current = selected.clone();
-                        ui.selectable_value(
-                            &mut selected,
-                            current.clone(),
-                            format!("{} (offline)", robot_name(&current)),
-                        );
-                    }
-                    for topic in &self.catalog.descriptions {
-                        if topic.rsplit('/').next() == Some("robot_description") {
-                            ui.selectable_value(&mut selected, topic.clone(), robot_name(topic));
-                        }
-                    }
-                });
+        crate::gui::combo_row(ui, "Robot", "ros_robot", label, |ui| {
+            if !selected.is_empty() && !self.catalog.descriptions.contains(&selected) {
+                let current = selected.clone();
+                ui.selectable_value(
+                    &mut selected,
+                    current.clone(),
+                    format!("{} (offline)", robot_name(&current)),
+                );
+            }
+            for topic in &self.catalog.descriptions {
+                if topic.rsplit('/').next() == Some("robot_description") {
+                    ui.selectable_value(&mut selected, topic.clone(), robot_name(topic));
+                }
+            }
         });
         if !selected.is_empty() && selected != previous_selected {
             self.requested.select_robot(selected);

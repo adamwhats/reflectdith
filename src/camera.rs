@@ -79,7 +79,8 @@ pub struct Shading {
     pub floor_fade_start: f32,
     pub floor_fade_end: f32,
     pub floor_noise_density: f32,
-    pub shadows: bool,
+    // How dark shadows are, from 0 (off) to 1 (fully shadowed)
+    pub shadow_strength: f32,
 }
 
 impl Default for Shading {
@@ -91,7 +92,7 @@ impl Default for Shading {
             floor_fade_start: 0.6,
             floor_fade_end: 2.5,
             floor_noise_density: 128.0,
-            shadows: true,
+            shadow_strength: 1.0,
         }
     }
 }

@@ -53,7 +53,7 @@ pub struct Options {
     /// Start with the controls hidden; press Tab to show them.
     #[arg(long)]
     pub hide_gui: bool,
-    /// Start with floor shadows disabled (also toggleable in the GUI).
+    /// Start with shadow strength at zero (also adjustable in the GUI).
     #[arg(long)]
     pub no_shadows: bool,
     /// Save a screenshot and exit after this many seconds (requires a display).

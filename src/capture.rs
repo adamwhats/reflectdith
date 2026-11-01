@@ -107,7 +107,7 @@ impl WgpuContext {
             );
         }
         self.shadows
-            .update(queue, &camera_uniform, floor_origin, self.gui.shading.shadows);
+            .update(queue, &camera_uniform, floor_origin, self.gui.shading.shadow_strength);
         self.post.write_uniform(
             queue,
             &self.gui.palette,

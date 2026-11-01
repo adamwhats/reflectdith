@@ -274,7 +274,7 @@ fn floor_shadow_and_fade_are_constant_inside_each_world_noise_cell() {
     let depth = textures::create_depth_view(&device, SIZE, SIZE);
     let mut images = Vec::new();
     for enabled in [true, false] {
-        shadows.update(&queue, &camera, floor_origin, enabled);
+        shadows.update(&queue, &camera, floor_origin, if enabled { 1. } else { 0. });
         let mut encoder = device.create_command_encoder(&Default::default());
         if enabled {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
