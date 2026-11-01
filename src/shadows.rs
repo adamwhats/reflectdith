@@ -1,4 +1,4 @@
-//! Directional-light depth map, sampled only by the floor material.
+//! Directional-light depth map, sampled by both robot and floor materials.
 use bytemuck::{Pod, Zeroable};
 use glam::{
     Mat4, Vec3, Vec4,
@@ -27,7 +27,7 @@ impl Shadows {
     pub fn new(device: &wgpu::Device, camera_layout: &wgpu::BindGroupLayout) -> Self {
         let depth_view = device
             .create_texture(&wgpu::TextureDescriptor {
-                label: Some("Floor shadow map"),
+                label: Some("Scene shadow map"),
                 size: wgpu::Extent3d {
                     width: MAP_SIZE,
                     height: MAP_SIZE,
@@ -72,7 +72,7 @@ impl Shadows {
             }],
         });
         let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Floor shadow sampling layout"),
+            label: Some("Scene shadow sampling layout"),
             entries: &[
                 uniform_entry,
                 wgpu::BindGroupLayoutEntry {
@@ -94,14 +94,14 @@ impl Shadows {
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Floor shadow comparison sampler"),
+            label: Some("Scene shadow comparison sampler"),
             compare: Some(wgpu::CompareFunction::LessEqual),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let scene_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Floor shadows"),
+            label: Some("Scene shadows"),
             layout: &scene_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -129,7 +129,7 @@ impl Shadows {
             source: wgpu::ShaderSource::Wgsl(include_str!("shadow.wgsl").into()),
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Floor shadow depth pipeline"),
+            label: Some("Scene shadow depth pipeline"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,

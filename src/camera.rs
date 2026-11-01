@@ -86,10 +86,10 @@ impl Default for Shading {
     fn default() -> Self {
         Self {
             shininess: 32.0,
-            specular_strength: 1.0,
+            specular_strength: 1.5,
             floor_brightness: 0.5,
             floor_fade_start: 0.6,
-            floor_fade_end: 20.0,
+            floor_fade_end: 2.5,
             floor_noise_density: 128.0,
             shadows: true,
         }

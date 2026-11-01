@@ -53,6 +53,9 @@ struct App {
     fps_last_frame_start: Instant,
     // The camera the mouse orbits and zooms
     orbit: camera::Orbit,
+    alternate_orbit: camera::Orbit,
+    #[cfg(feature = "ros2")]
+    ros_connection: Option<ros::RosConnection>,
     // Whether the left button is held down, having been pressed outside the
     // menu, and where the cursor was last seen
     dragging: bool,
@@ -108,6 +111,14 @@ struct WgpuContext {
 }
 
 impl WgpuContext {
+    fn active_robot(&self) -> Option<&robot::RobotScene> {
+        if self.gui.mode == gui::ViewMode::Robot {
+            self.robot.as_ref()
+        } else {
+            None
+        }
+    }
+
     fn scene_uniform(&self, orbit: &camera::Orbit, aspect: f32, offset: f32) -> (camera::CameraUniform, glam::Vec3) {
         let camera = camera::camera_uniform(
             orbit,
@@ -117,7 +128,7 @@ impl WgpuContext {
             aspect,
             offset,
         );
-        if let Some(robot) = &self.robot {
+        if let Some(robot) = self.active_robot() {
             let view = robot.view(&self.live.lock().unwrap(), &self.options);
             (camera.follow(view.camera_motion), view.floor_origin)
         } else {
@@ -226,7 +237,7 @@ impl WgpuContext {
             return;
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Floor shadow depth pass"),
+            label: Some("Scene shadow depth pass"),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.shadows.depth_view,
@@ -241,9 +252,9 @@ impl WgpuContext {
         pass.set_pipeline(&self.shadows.pipeline);
         pass.set_bind_group(0, &self.camera_transform.bind_group, &[]);
         pass.set_bind_group(1, &self.shadows.depth_group, &[]);
-        if let Some(robot) = &self.robot {
+        if let Some(robot) = self.active_robot() {
             robot.draw(&mut pass);
-        } else if !self.options.ros && self.options.urdf.is_none() {
+        } else if self.gui.mode == gui::ViewMode::Mesh {
             pass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
             pass.draw(0..self.mesh.num_vertices as u32, 0..1);
         }
@@ -304,9 +315,9 @@ impl WgpuContext {
 
         // Draw every vertex in the buffer as a non-indexed triangle list (one
         // instance)
-        if let Some(robot) = &self.robot {
+        if let Some(robot) = self.active_robot() {
             robot.draw(&mut render_pass);
-        } else if !self.options.ros && self.options.urdf.is_none() {
+        } else if self.gui.mode == gui::ViewMode::Mesh {
             render_pass.draw(0..self.mesh.num_vertices as u32, 0..1);
         }
 
@@ -511,6 +522,7 @@ impl ApplicationHandler for App {
             .take()
             .map(|robot| robot::RobotScene::new(robot, &device, &camera_transform_layout));
         if self.options.ros || self.options.urdf.is_some() {
+            gui.mode = gui::ViewMode::Robot;
             gui.controls.model_speed = 0.;
             gui.controls.light_speed = 0.;
             gui.robot_status = Some("Waiting for robot description".into());
@@ -645,7 +657,35 @@ impl ApplicationHandler for App {
                     wgpu_context.update_robot();
                     // Lay out the side menu first, so any palette change is
                     // uploaded in time for this frame's post pass
+                    let previous_mode = wgpu_context.gui.mode;
                     let gui_output = wgpu_context.gui.run(window);
+                    if previous_mode != wgpu_context.gui.mode {
+                        std::mem::swap(&mut self.orbit, &mut self.alternate_orbit);
+                        self.dragging = false;
+                        wgpu_context.gui.controls.model_speed = if wgpu_context.gui.mode == gui::ViewMode::Mesh {
+                            camera::ROT_VEL.to_degrees()
+                        } else {
+                            0.
+                        };
+                        if wgpu_context.gui.mode == gui::ViewMode::Robot
+                            && !wgpu_context.options.ros
+                            && wgpu_context.options.urdf.is_none()
+                        {
+                            #[cfg(feature = "ros2")]
+                            match ros::RosConnection::start(wgpu_context.options.clone(), self.live.clone()) {
+                                Ok(connection) => {
+                                    self.ros_connection = Some(connection);
+                                    wgpu_context.options.ros = true;
+                                    wgpu_context.gui.robot_status = Some("Waiting for robot description".into());
+                                }
+                                Err(error) => wgpu_context.gui.robot_status = Some(format!("ROS connection: {error}")),
+                            }
+                            #[cfg(not(feature = "ros2"))]
+                            {
+                                wgpu_context.gui.robot_status = Some("Live robots require the ROS build: scripts/ros-viewer. You can also launch with --urdf PATH.".into());
+                            }
+                        }
+                    }
                     if let Some(topics) = &mut wgpu_context.gui.topics
                         && std::mem::take(&mut topics.changed)
                     {
@@ -664,8 +704,7 @@ impl ApplicationHandler for App {
 
                     // Load the mesh again if a different model was picked in
                     // the menu
-                    if wgpu_context.robot.is_none()
-                        && !wgpu_context.options.ros
+                    if wgpu_context.gui.mode == gui::ViewMode::Mesh
                         && wgpu_context.gui.selected_model != wgpu_context.loaded_model
                     {
                         wgpu_context.mesh =
@@ -717,7 +756,7 @@ impl ApplicationHandler for App {
                         0,
                         bytemuck::bytes_of(&camera_uniform),
                     );
-                    if let Some(robot) = &wgpu_context.robot {
+                    if let Some(robot) = wgpu_context.active_robot() {
                         robot.update(
                             &wgpu_context.queue,
                             &camera_uniform,
@@ -843,7 +882,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let live = robot::SharedState::default();
     live.lock().unwrap().robot_root = initial_robot.as_ref().map(|r| r.root.clone());
     #[cfg(feature = "ros2")]
-    let _ros = if options.ros {
+    let ros_connection = if options.ros {
         Some(ros::RosConnection::start(options.clone(), live.clone())?)
     } else {
         None
@@ -900,6 +939,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if options.ros || options.urdf.is_some() {
         orbit.fit_robot();
     }
+    let mut alternate_orbit = camera::Orbit::default();
+    if !options.ros && options.urdf.is_none() {
+        alternate_orbit.fit_robot();
+    }
     // Create the application handler
     let mut app = App {
         window: None,
@@ -909,6 +952,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fps_last_update: Instant::now(),
         fps_last_frame_start: Instant::now(),
         orbit,
+        alternate_orbit,
+        #[cfg(feature = "ros2")]
+        ros_connection,
         dragging: false,
         last_cursor: None,
         options,

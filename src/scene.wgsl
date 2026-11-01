@@ -34,9 +34,10 @@ struct Shadow {
 @group(2) @binding(1) var shadow_map: texture_depth_2d;
 @group(2) @binding(2) var shadow_sampler: sampler_comparison;
 
-fn floor_visibility(world: vec3<f32>) -> f32 {
+fn surface_visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     if shadow.settings.x < 0.5 { return 1.0; }
-    let clip = shadow.light_view_proj * vec4<f32>(world, 1.0);
+    // Offset the receiver slightly to avoid a surface shadowing itself.
+    let clip = shadow.light_view_proj * vec4<f32>(world + normal * 0.002, 1.0);
     let ndc = clip.xyz / clip.w;
     if any(abs(ndc.xy) > vec2<f32>(1.0)) || ndc.z < 0.0 || ndc.z > 1.0 { return 1.0; }
     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
@@ -91,10 +92,11 @@ fn fragment_main(
     let half = normalize(to_light + view);
     // Diffuse lighting
     let diffuse_term = max(dot(n, to_light), 0.0);
-    let diffuse = albedo_colour * (ambient_amount + light_colour * diffuse_term);
+    let visibility = surface_visibility(vertex_output.world_position, n);
+    let diffuse = albedo_colour * (ambient_amount + light_colour * diffuse_term * visibility);
     // Specular lighting
     let specular_term = pow(max(dot(n, half), 0.0), camera.specular.x);
-    let specular = light_colour * camera.specular.y * specular_term;
+    let specular = light_colour * camera.specular.y * specular_term * visibility;
     // Sum for final colour
     let colour = diffuse + specular;
     return vec4<f32>(colour, 1.0);
@@ -113,7 +115,7 @@ fn fragment_floor(
     let diffuse_term = max(dot(n, to_light), 0.0);
     let centre_distance = length(vertex_output.world_position.xz - camera.model[3].xz);
     let fade = 1.0 - smoothstep(camera.floor.y, camera.floor.z, centre_distance);
-    let colour = vec3<f32>(camera.floor.x) * (ambient_amount + light_colour * diffuse_term * floor_visibility(vertex_output.world_position)) * fade;
+    let colour = vec3<f32>(camera.floor.x) * (ambient_amount + light_colour * diffuse_term * surface_visibility(vertex_output.world_position, n)) * fade;
     // World XZ, independent of the camera, robot pose, and screenshot resolution.
     // Wrap signed cells explicitly so the pattern is continuous across the origin.
     let size = vec2<i32>(textureDimensions(world_noise));

@@ -97,7 +97,7 @@ impl WgpuContext {
             0,
             bytemuck::bytes_of(&camera_uniform.for_floor_at(floor_origin)),
         );
-        if let Some(robot) = &self.robot {
+        if let Some(robot) = self.active_robot() {
             robot.update(queue, &camera_uniform, &self.live.lock().unwrap(), &self.options);
         }
         self.shadows

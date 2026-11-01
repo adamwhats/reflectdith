@@ -34,8 +34,13 @@ The launcher selects the single running `gazebo-web-sim` container. If several
 are running, it lists them and asks you to pass `--container NAME`. An explicit
 `--image IMAGE` runs without automatic container selection.
 
+The **View → Mesh / Robot** selector switches at runtime and keeps each view’s
+camera position. ROS stays connected while viewing meshes, so switching back
+uses the latest robot pose. In a ROS-enabled build, selecting Robot also starts
+discovery if it was not enabled at launch.
+
 The **Robot** dropdown refreshes automatically and shows robot names, rather
-than individual ROS topics. **Auto** selects a single available robot; choose a
+than individual ROS topics. A single available robot is selected automatically; choose a
 name when several robots are present. Its description, joint states, and connected
 odom/map frame are paired automatically. Selecting another robot reconnects the
 viewer without restarting it. The camera follows `base_footprint` in that robot's
@@ -110,17 +115,19 @@ namespaced from the URDF root, e.g. `m20/base_footprint`). Override it with
 camera. The floor sits at the footprint height, rather than at the lowest point
 of the zero-joint pose, and its visible patch stays beneath that frame.
 
-**Floor → Shadows** toggles directional shadows cast by the robot. They are on
+**Lighting → Shadows** toggles directional shadows cast by the robot,
+including shadows from one part of the robot onto another. They are on
 by default and follow the scene light, including light rotation. Use
 `--no-shadows` to start with them disabled. Shadows also appear in exported
 screenshots. Floor defaults are brightness **0.5**, fade start **0.6**, and fade
-end **20**. Shininess ranges from **1** to **64**.
+end **2.5**. Shininess ranges from **1** to **64**.
 
 The floor blue noise is anchored to world X/Z coordinates, so it remains fixed
 as the robot moves or the camera orbits. Robot mode starts with a stationary light;
 **Light speed** enables rotation independently of the robot. Shininess and specular
 strength controls remain available below the robot picker; angle fields are omitted.
-Adjust **Floor noise density** in the panel to change its pattern spacing; robot
+Specular strength defaults to **1.5**.
+Adjust **Floor → Pattern density** in the panel to change its pattern spacing; robot
 surfaces retain their Bayer dithering. The camera keeps its orbit and zoom relative to the followed footprint.
 
 ### Run without Docker

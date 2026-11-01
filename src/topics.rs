@@ -127,12 +127,16 @@ pub struct TopicPanel {
 impl TopicPanel {
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let before = self.requested.clone();
-        let mut selected = self.requested.description.clone();
-        let label = if selected == "auto" {
+        let mut selected = if self.requested.description == "auto" {
             self.active
                 .as_ref()
                 .filter(|a| !a.description.is_empty())
-                .map_or("Auto".into(), |a| format!("Auto · {}", robot_name(&a.description)))
+                .map_or_else(String::new, |a| a.description.clone())
+        } else {
+            self.requested.description.clone()
+        };
+        let label = if selected.is_empty() {
+            "Select robot".into()
         } else {
             robot_name(&selected)
         };
@@ -141,8 +145,7 @@ impl TopicPanel {
             .width(250.)
             .selected_text(label)
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut selected, "auto".into(), "Auto");
-                if selected != "auto" && !self.catalog.descriptions.contains(&selected) {
+                if !selected.is_empty() && !self.catalog.descriptions.contains(&selected) {
                     let current = selected.clone();
                     ui.selectable_value(
                         &mut selected,
@@ -156,7 +159,7 @@ impl TopicPanel {
                     }
                 }
             });
-        if selected != self.requested.description {
+        if !selected.is_empty() && selected != self.requested.description {
             self.requested.select_robot(selected);
         }
         if self

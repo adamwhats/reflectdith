@@ -52,6 +52,12 @@ impl SceneControls {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Mesh,
+    Robot,
+}
+
 // The side menu, drawn with egui on top of the dithered image
 pub struct Gui {
     // egui's UI state, carried between frames
@@ -84,6 +90,7 @@ pub struct Gui {
     // The result of the last capture, shown under the button
     pub status: String,
     pub robot_status: Option<String>,
+    pub mode: ViewMode,
     pub visible: bool,
     pub topics: Option<crate::topics::TopicPanel>,
 }
@@ -160,6 +167,7 @@ impl Gui {
             capture_requested: false,
             status: String::new(),
             robot_status: None,
+            mode: ViewMode::Mesh,
             visible: true,
             topics: None,
         }
@@ -192,6 +200,7 @@ impl Gui {
         let robot_status = &self.robot_status;
         let visible = &mut self.visible;
         let topics = &mut self.topics;
+        let mode = &mut self.mode;
         let mut menu_width_points = 0.0;
         let mut output = self.context.run_ui(input, |ui| {
             if !*visible {
@@ -208,15 +217,23 @@ impl Gui {
                             *visible = false;
                         }
                         ui.separator();
-                        if let Some(topics) = topics {
-                            topics.ui(ui);
+                        ui.horizontal(|ui| {
+                            ui.label("View");
+                            ui.selectable_value(mode, ViewMode::Mesh, "Mesh");
+                            ui.selectable_value(mode, ViewMode::Robot, "Robot");
+                        });
+                        ui.separator();
+                        if *mode == ViewMode::Robot {
+                            if let Some(topics) = topics {
+                                topics.ui(ui);
+                            }
+                            if let Some(status) = robot_status {
+                                ui.label(status);
+                            }
                         }
                         // Each section is a grid with the labels in one column and
                         // the controls in the next, so they line up
-                        if let Some(status) = robot_status {
-                            ui.label(status);
-                        }
-                        if robot_status.is_none() {
+                        if *mode == ViewMode::Mesh {
                             ui.heading("Model");
                             egui::Grid::new("model_grid").show(ui, |ui| {
                                 ui.label("Mesh");
@@ -232,6 +249,7 @@ impl Gui {
                             ui.separator();
                         }
                         ui.heading("Lighting");
+                        ui.checkbox(&mut shading.shadows, "Shadows");
                         egui::Grid::new("light_grid").show(ui, |ui| {
                             ui.label("Light speed");
                             value_slider(ui, &mut controls.light_speed, -180.0..=180.0, 0, "°/s");
@@ -254,7 +272,6 @@ impl Gui {
                         ui.separator();
 
                         ui.heading("Floor");
-                        ui.checkbox(&mut shading.shadows, "Shadows");
                         egui::Grid::new("floor_grid").show(ui, |ui| {
                             ui.label("Brightness");
                             value_slider(ui, &mut shading.floor_brightness, 0.0..=1.0, 2, "");
@@ -272,14 +289,13 @@ impl Gui {
                             );
                             ui.end_row();
                         });
+                        ui.label("Pattern density");
+                        value_slider(ui, &mut shading.floor_noise_density, 16.0..=256.0, 0, "");
                         if ui.button("Reset shading").clicked() {
                             *shading = camera::Shading::default();
                         }
                         ui.separator();
 
-                        ui.label("Floor noise density (world units)");
-                        value_slider(ui, &mut shading.floor_noise_density, 16.0..=256.0, 0, "");
-                        ui.separator();
                         ui.heading("Palette");
                         ui.horizontal(|ui| {
                             ui.label("Dark");
