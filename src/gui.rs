@@ -17,6 +17,10 @@ const PANEL_WIDTH: f32 = 300.0;
 // them whatever their units
 const VALUE_WIDTH: f32 = 70.0;
 
+// Width in points of the label column every control row starts with, so the
+// controls of all sections line up. Fits the longest label, "Bayer density"
+const LABEL_WIDTH: f32 = 110.0;
+
 // The rotation of the model and the light about the world Y axis. Each angle
 // advances at its speed every frame; only light speed is exposed in the menu
 pub struct SceneControls {
@@ -95,19 +99,36 @@ pub struct Gui {
     pub mode: ViewMode,
     pub visible: bool,
     pub topics: Option<crate::topics::TopicPanel>,
+    // FPS and resource usage, drawn in the top-left corner of the view
+    pub stats_text: String,
 }
 
-// A slider followed by a number box of a fixed width, so the boxes line up
-// whatever the value or suffix. The two edit the same value, shown with the
-// given number of decimal places
+// A row of controls after a label in the fixed-width label column
+pub fn labeled_row<R>(ui: &mut egui::Ui, label: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        let size = egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_size(size);
+            ui.label(label);
+        });
+        add_contents(ui)
+    })
+    .inner
+}
+
+// A labelled slider followed by a number box of a fixed width, the slider
+// stretched so the box sits at the right edge. The two edit the same value,
+// shown with the given number of decimal places
 fn value_slider<N: egui::emath::Numeric>(
     ui: &mut egui::Ui,
+    label: &str,
     value: &mut N,
     range: RangeInclusive<N>,
     decimals: usize,
     suffix: &str,
 ) {
-    ui.horizontal(|ui| {
+    labeled_row(ui, label, |ui| {
+        ui.spacing_mut().slider_width = ui.available_width() - VALUE_WIDTH - ui.spacing().item_spacing.x;
         ui.add(egui::Slider::new(value, range.clone()).show_value(false));
         ui.add_sized(
             [VALUE_WIDTH, ui.spacing().interact_size.y],
@@ -117,6 +138,46 @@ fn value_slider<N: egui::emath::Numeric>(
                 .suffix(suffix),
         );
     });
+}
+
+// A labelled checkbox, the box in the control column
+fn checkbox_row(ui: &mut egui::Ui, label: &str, value: &mut bool) {
+    labeled_row(ui, label, |ui| ui.checkbox(value, ""));
+}
+
+// A labelled dropdown filling the control column
+pub fn combo_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    id: &str,
+    selected_text: String,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    labeled_row(ui, label, |ui| {
+        egui::ComboBox::from_id_salt(id)
+            .width(ui.available_width())
+            .truncate()
+            .selected_text(selected_text)
+            .show_ui(ui, add_contents);
+    });
+}
+
+// The stats text in the top-left corner of the view, right of the menu, in
+// the palette's light colour. It ignores the pointer so it never blocks orbiting
+fn stats_overlay(ui: &egui::Ui, text: &str, palette: &Palette, left: f32) {
+    if text.is_empty() {
+        return;
+    }
+    // The palette is linear RGB, as the colour buttons edit it
+    let [r, g, b] = palette.light;
+    let colour = egui::Color32::from(egui::Rgba::from_rgb(r, g, b));
+    egui::Area::new(egui::Id::unique("stats_overlay"))
+        .order(egui::Order::Background)
+        .interactable(false)
+        .fixed_pos(egui::pos2(left + 8.0, 8.0))
+        .show(ui.ctx(), |ui| {
+            ui.label(egui::RichText::new(text).monospace().color(colour));
+        });
 }
 
 // The name shown in the dropdown for a model file
@@ -173,6 +234,7 @@ impl Gui {
             robot_status: None,
             mode: ViewMode::Mesh,
             visible: true,
+            stats_text: String::new(),
             topics: None,
         }
     }
@@ -207,25 +269,29 @@ impl Gui {
         let visible = &mut self.visible;
         let topics = &mut self.topics;
         let mode = &mut self.mode;
+        let stats_text = &self.stats_text;
         let mut menu_width_points = 0.0;
         let mut output = self.context.run_ui(input, |ui| {
             if !*visible {
+                stats_overlay(ui, stats_text, palette, 0.0);
                 return;
             }
             let panel = egui::Panel::left("side_menu")
                 .resizable(false)
-                .default_size(PANEL_WIDTH)
+                .exact_size(PANEL_WIDTH)
                 .show(ui, |ui| {
                     // The window can be small, so let the menu scroll rather than
                     // be cut off
+                    // A solid scroll bar takes its own space, rather than floating
+                    // over the number boxes at the right edge
+                    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        if ui.button("Hide controls (Tab)").clicked() {
+                        if ui.button("Hide controls").clicked() {
                             *visible = false;
                         }
                         ui.separator();
                         ui.heading("Scene");
-                        ui.horizontal(|ui| {
-                            ui.label("View");
+                        labeled_row(ui, "View", |ui| {
                             ui.selectable_value(mode, ViewMode::Mesh, "Mesh");
                             ui.selectable_value(mode, ViewMode::Robot, "Robot");
                         });
@@ -234,66 +300,47 @@ impl Gui {
                                 topics.ui(ui);
                             }
                             if let Some(status) = robot_status {
-                                ui.add(egui::Label::new(status.replace('\n', " · ")).truncate())
-                                    .on_hover_text(status);
+                                ui.add(
+                                    egui::Label::new(status.replace('\n', " · "))
+                                        .truncate()
+                                        .show_tooltip_when_elided(false),
+                                );
                             }
                         } else {
-                            ui.horizontal(|ui| {
-                                ui.label("Mesh");
-                                egui::ComboBox::from_id_salt("model_select")
-                                    .width(200.)
-                                    .truncate()
-                                    .selected_text(model_name(&models[*selected_model]))
-                                    .show_ui(ui, |ui| {
-                                        for (index, model) in models.iter().enumerate() {
-                                            ui.selectable_value(selected_model, index, model_name(model));
-                                        }
-                                    });
+                            let selected_text = model_name(&models[*selected_model]);
+                            combo_row(ui, "Mesh", "model_select", selected_text, |ui| {
+                                for (index, model) in models.iter().enumerate() {
+                                    ui.selectable_value(selected_model, index, model_name(model));
+                                }
                             });
                         }
                         ui.separator();
 
                         ui.heading("Lighting");
-                        ui.checkbox(&mut shading.shadows, "Shadows");
-                        egui::Grid::new("light_grid").show(ui, |ui| {
-                            ui.label("Rotation")
-                                .on_hover_text("World light rotation; zero keeps the light stationary.");
-                            value_slider(ui, &mut controls.light_speed, -180.0..=180.0, 0, "°/s");
-                            ui.end_row();
-                            ui.label("Shininess");
-                            value_slider(ui, &mut shading.shininess, 1.0..=64.0, 0, "");
-                            ui.end_row();
-                            ui.label("Specular").on_hover_text("Highlight strength.");
-                            value_slider(ui, &mut shading.specular_strength, 0.0..=3.0, 2, "");
-                            ui.end_row();
-                        });
+                        value_slider(ui, "Shadows", &mut shading.shadow_strength, 0.0..=1.0, 2, "");
+                        value_slider(ui, "Rotation", &mut controls.light_speed, -180.0..=180.0, 0, "°/s");
+                        value_slider(ui, "Shininess", &mut shading.shininess, 1.0..=64.0, 0, "");
+                        value_slider(ui, "Specular", &mut shading.specular_strength, 0.0..=3.0, 2, "");
                         if ui.button("Reset lighting").clicked() {
                             controls.reset_light();
                             let defaults = camera::Shading::default();
                             shading.shininess = defaults.shininess;
                             shading.specular_strength = defaults.specular_strength;
-                            shading.shadows = defaults.shadows;
+                            shading.shadow_strength = defaults.shadow_strength;
                         }
                         ui.separator();
 
                         ui.heading("Floor");
-                        egui::Grid::new("floor_grid").show(ui, |ui| {
-                            ui.label("Brightness");
-                            value_slider(ui, &mut shading.floor_brightness, 0.0..=1.0, 2, "");
-                            ui.end_row();
-                            ui.label("Fade start");
-                            value_slider(ui, &mut shading.floor_fade_start, 0.0..=6.0, 1, "");
-                            ui.end_row();
-                            ui.label("Fade end");
-                            value_slider(
-                                ui,
-                                &mut shading.floor_fade_end,
-                                0.0..=crate::vertices::FLOOR_HALF_EXTENT,
-                                1,
-                                "",
-                            );
-                            ui.end_row();
-                        });
+                        value_slider(ui, "Brightness", &mut shading.floor_brightness, 0.0..=1.0, 2, "");
+                        value_slider(ui, "Fade start", &mut shading.floor_fade_start, 0.0..=6.0, 1, "");
+                        value_slider(
+                            ui,
+                            "Fade end",
+                            &mut shading.floor_fade_end,
+                            0.0..=crate::vertices::FLOOR_HALF_EXTENT,
+                            1,
+                            "",
+                        );
                         if ui.button("Reset floor").clicked() {
                             let defaults = camera::Shading::default();
                             shading.floor_brightness = defaults.floor_brightness;
@@ -303,23 +350,17 @@ impl Gui {
                         ui.separator();
 
                         ui.heading("Dithering");
-                        ui.checkbox(shared_grid, "Shared grid").on_hover_text(
-                            "Snap the whole scene to the Bayer pixel grid. Off keeps smooth scene edges and independent dither patterns.",
+                        checkbox_row(ui, "Shared grid", shared_grid);
+                        value_slider(ui, "Levels", levels, 2..=post::MAX_LEVELS, 0, "");
+                        value_slider(ui, "Bayer density", bayer_density, 0.125..=1.0, 2, "×");
+                        value_slider(
+                            ui,
+                            "Floor density",
+                            &mut shading.floor_noise_density,
+                            16.0..=256.0,
+                            0,
+                            "",
                         );
-                        egui::Grid::new("dithering_grid").show(ui, |ui| {
-                            ui.label("Levels");
-                            value_slider(ui, levels, 2..=post::MAX_LEVELS, 0, "");
-                            ui.end_row();
-                            ui.label("Bayer density").on_hover_text(
-                                "Image pixel grid and robot/mesh Bayer pattern. Lower values make larger pixels.",
-                            );
-                            value_slider(ui, bayer_density, 0.125..=1.0, 2, "×");
-                            ui.end_row();
-                            ui.label("Floor density")
-                                .on_hover_text("World-locked floor cells; noise, shadows and fade share each cell.");
-                            value_slider(ui, &mut shading.floor_noise_density, 16.0..=256.0, 0, "");
-                            ui.end_row();
-                        });
                         if ui.button("Reset dithering").clicked() {
                             *levels = post::DEFAULT_LEVELS;
                             *bayer_density = post::DEFAULT_BAYER_DENSITY;
@@ -335,14 +376,16 @@ impl Gui {
                             ui.label("Light");
                             ui.color_edit_button_rgb(&mut palette.light);
                         });
-                        ui.horizontal(|ui| {
-                            if ui.button("Random").clicked() {
+                        // Three equal-width buttons spanning the menu
+                        ui.columns(3, |columns| {
+                            let size = [columns[0].available_width(), columns[0].spacing().interact_size.y];
+                            if columns[0].add_sized(size, egui::Button::new("Random")).clicked() {
                                 *palette = Palette::random_muted();
                             }
-                            if ui.button("Swap colours").clicked() {
+                            if columns[1].add_sized(size, egui::Button::new("Swap")).clicked() {
                                 std::mem::swap(&mut palette.dark, &mut palette.light);
                             }
-                            if ui.button("Reset").clicked() {
+                            if columns[2].add_sized(size, egui::Button::new("Reset")).clicked() {
                                 *palette = Palette::default();
                             }
                         });
@@ -353,13 +396,14 @@ impl Gui {
                             *capture_requested = true;
                         }
                         if !status.is_empty() {
-                            ui.add(egui::Label::new(status).truncate()).on_hover_text(status);
+                            ui.add(egui::Label::new(status).truncate().show_tooltip_when_elided(false));
                         }
                     });
                 });
 
             // The space the whole panel takes, including its margins
             menu_width_points = panel.response.rect.width();
+            stats_overlay(ui, stats_text, palette, menu_width_points);
         });
         self.menu_width_px = if self.visible {
             menu_width_points * output.pixels_per_point

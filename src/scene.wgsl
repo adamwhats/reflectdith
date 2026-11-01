@@ -35,7 +35,8 @@ struct Shadow {
 @group(2) @binding(2) var shadow_sampler: sampler_comparison;
 
 fn surface_visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
-    if shadow.settings.x < 0.5 { return 1.0; }
+    // settings.x is the shadow strength; 0 turns shadows off
+    if shadow.settings.x <= 0.0 { return 1.0; }
     // Offset the receiver slightly to avoid a surface shadowing itself.
     let clip = shadow.light_view_proj * vec4<f32>(world + normal * 0.002, 1.0);
     let ndc = clip.xyz / clip.w;
@@ -48,7 +49,7 @@ fn surface_visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
             visibility += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + vec2<f32>(f32(x), f32(y)) * texel, ndc.z - 0.0002);
         }
     }
-    return visibility / 9.0;
+    return mix(1.0, visibility / 9.0, shadow.settings.x);
 }
 
 // Output structure for the vertex shader
