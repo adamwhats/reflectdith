@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::f32::consts::TAU;
 
 use super::{Scene, SceneCtx, SceneView};
@@ -12,7 +13,7 @@ const VIEW_DISTANCE: f32 = 0.5;
 const NEIGHBOURS: usize = 7;
 const SEPARATION: f32 = 0.2;
 const ALIGNMENT: f32 = 2.0;
-const COHESION: f32 = 1.0;
+const COHESION: f32 = 2.0;
 // Cosine of the half-angle each boid can see, so -0.5 leaves a 120° blind
 // spot behind it
 const FIELD_OF_VIEW: f32 = -0.5;
@@ -24,11 +25,27 @@ const BOUNDARY_SIZE: f32 = 3.0;
 const BOUNDARY_MARGIN: f32 = 0.75;
 const BOUNDARY_STRENGTH: f32 = 2.0;
 const BOUNDARY_FALLOFF: f32 = 0.25;
+// Starting trail length in seconds of flight, set from the menu. 0 turns
+// trails off
+const TRAIL_LENGTH: f32 = 0.0;
+// Trails are sampled at this interval, and can be up to MAX_TRAIL_LENGTH
+// seconds long, which sizes the vertex buffer
+const TRAIL_INTERVAL: f32 = 1.0 / 20.0;
+const MAX_TRAIL_LENGTH: f32 = 3.0;
+const MAX_TRAIL_POINTS: usize = (MAX_TRAIL_LENGTH / TRAIL_INTERVAL) as usize;
+// Sides around a boid's cone, radius of its base, which sits at its position,
+// and length from there to its nose. Trails are tubes with the same sides,
+// starting at the base's radius so the two meet edge to edge
+const BOID_FACES: u8 = 8;
+const BOID_RADIUS: f32 = 0.1;
+const BOID_LENGTH: f32 = 0.3;
 
 struct Boid {
     position: Vec3,
     velocity: Vec3,
     rotation: Quat,
+    // Past positions, newest first, one every TRAIL_INTERVAL
+    trail: VecDeque<Vec3>,
 }
 
 impl Boid {
@@ -37,6 +54,7 @@ impl Boid {
             position,
             velocity,
             rotation: Quat::IDENTITY,
+            trail: VecDeque::new(),
         };
         boid.update_rotation();
         boid
@@ -128,32 +146,42 @@ pub struct Boids {
     separation: f32,
     alignment: f32,
     cohesion: f32,
+    // Trail length in seconds from the menu, and the time since the last
+    // trail point was recorded
+    trail_length: f32,
+    trail_timer: f32,
 }
 
 impl Boids {
     pub fn new(device: &Device, num_boids: u32) -> Self {
         // Initialise geometry once, this is shared by each Boid
-        let geom = create_boid_vertices(8, 0.1, 0.3);
-        let num_vertices = num_boids * geom.len() as u32;
+        let geom = create_boid_vertices(BOID_FACES, BOID_RADIUS, BOID_LENGTH);
+
+        // Room for every boid's body and longest trail, at 6 vertices (two
+        // triangles) per side per trail segment. Fewer are drawn when trails
+        // are short
+        let max_vertices = num_boids as usize * (geom.len() + MAX_TRAIL_POINTS * BOID_FACES as usize * 6);
 
         // Build Boids struct
         Self {
             boids: spawn_boids(num_boids),
             geom,
-            num_vertices,
+            num_vertices: 0,
             vertex_buffer: device.create_buffer(&BufferDescriptor {
                 label: Some("Boid vertices"),
-                size: num_vertices as u64 * size_of::<Vertex>() as u64,
+                size: (max_vertices * size_of::<Vertex>()) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
-            drawn_vertices: Vec::with_capacity(num_vertices as usize),
+            drawn_vertices: Vec::with_capacity(max_vertices),
             shadow_revision: 0,
             view_distance: VIEW_DISTANCE,
             neighbours: NEIGHBOURS,
             separation: SEPARATION,
             alignment: ALIGNMENT,
             cohesion: COHESION,
+            trail_length: TRAIL_LENGTH,
+            trail_timer: 0.0,
         }
     }
 
@@ -161,17 +189,84 @@ impl Boids {
         // Clear old verticies
         self.drawn_vertices.clear();
 
-        // Transform geom to the new positions
-        for boid in self.boids.iter_mut() {
-            for v in self.geom.iter_mut() {
+        let sides = BOID_FACES as usize;
+        let mut points = vec![];
+        let mut rings = vec![];
+        for boid in self.boids.iter() {
+            // Transform geom to the new positions
+            for v in self.geom.iter() {
                 self.drawn_vertices.push(Vertex {
                     position: (boid.rotation * Vec3::from(v.position) + boid.position).into(),
                     normal: (boid.rotation * Vec3::from(v.normal)).into(),
                 });
             }
+
+            // The trail is a tube from the boid back through its past
+            // positions, tapering from the cone's base to a point
+            points.clear();
+            points.push(boid.position);
+            points.extend(boid.trail.iter().copied());
+            let segments = points.len() - 1;
+
+            // A ring of corners around each point. The first lines up with
+            // the cone's base, and each after it is turned as little as
+            // possible from the one before to sit across the trail, so the
+            // tube doesn't twist
+            rings.clear();
+            let (mut u, mut v) = (boid.rotation * Vec3::X, boid.rotation * Vec3::Y);
+            for k in 0..=segments {
+                if k > 0 {
+                    // Direction of travel through point k
+                    if let Some(forward) = (points[k - 1] - points[(k + 1).min(segments)]).try_normalize() {
+                        u = (u - forward * u.dot(forward)).try_normalize().unwrap_or(u);
+                        v = forward.cross(u);
+                    }
+                }
+                let radius = BOID_RADIUS * (1.0 - k as f32 / segments as f32);
+                for j in 0..sides {
+                    let (s, c) = (TAU * j as f32 / sides as f32).sin_cos();
+                    rings.push(points[k] + (u * c + v * s) * radius);
+                }
+            }
+
+            // Join each pair of rings with a quad per side
+            for k in 0..segments {
+                let centre = (points[k] + points[k + 1]) * 0.5;
+                // Dims towards the tail. The scene shader reads the normal's
+                // length as brightness
+                let brightness = 1.0 - (k as f32 + 0.5) / segments as f32;
+                for j in 0..sides {
+                    let next = (j + 1) % sides;
+                    let (a0, a1) = (rings[k * sides + j], rings[k * sides + next]);
+                    let (b0, b1) = (rings[(k + 1) * sides + j], rings[(k + 1) * sides + next]);
+
+                    // One normal for the quad, from its wider end, which never
+                    // closes to a point, turned to face out of the tube
+                    let mut normal = (a1 - a0).cross(b0 - a0).normalize_or_zero();
+                    if normal.dot((a0 + a1 + b0 + b1) * 0.25 - centre) < 0.0 {
+                        normal = -normal;
+                    }
+                    let normal = normal * brightness;
+
+                    for [p0, mut p1, mut p2] in [[a0, a1, b0], [b0, a1, b1]] {
+                        // Wind anticlockwise as seen from outside, so the
+                        // outside isn't culled as a back face
+                        if (p1 - p0).cross(p2 - p0).dot(normal) < 0.0 {
+                            std::mem::swap(&mut p1, &mut p2);
+                        }
+                        for p in [p0, p1, p2] {
+                            self.drawn_vertices.push(Vertex {
+                                position: p.into(),
+                                normal: normal.into(),
+                            });
+                        }
+                    }
+                }
+            }
         }
 
         // Write transformed vertices to queue
+        self.num_vertices = self.drawn_vertices.len() as u32;
         queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.drawn_vertices));
     }
 
@@ -195,6 +290,15 @@ impl Scene for Boids {
 
     fn update(&mut self, _ctx: &SceneCtx, dt: f32) {
         self.shadow_revision += 1;
+
+        // Record a trail point every TRAIL_INTERVAL, keeping as many as fit
+        // in the trail length
+        self.trail_timer += dt;
+        let record_trail = self.trail_timer >= TRAIL_INTERVAL;
+        if record_trail {
+            self.trail_timer %= TRAIL_INTERVAL;
+        }
+        let trail_points = ((self.trail_length / TRAIL_INTERVAL).round() as usize).min(MAX_TRAIL_POINTS);
 
         // Calculate accelerations
         let mut accelerations = vec![];
@@ -253,6 +357,10 @@ impl Scene for Boids {
             boid.velocity = boid.velocity.clamp_length(MIN_SPEED, MAX_SPEED);
             boid.position += boid.velocity * dt;
             boid.update_rotation();
+            if record_trail {
+                boid.trail.push_front(boid.position);
+            }
+            boid.trail.truncate(trail_points);
         }
     }
 
@@ -289,6 +397,7 @@ impl Scene for Boids {
         gui::value_slider(ui, "Separation", &mut self.separation, 0.0..=1.0, 2, "");
         gui::value_slider(ui, "Alignment", &mut self.alignment, 0.0..=10.0, 1, "");
         gui::value_slider(ui, "Cohesion", &mut self.cohesion, 0.0..=10.0, 1, "");
+        gui::value_slider(ui, "Trails", &mut self.trail_length, 0.0..=MAX_TRAIL_LENGTH, 2, " s");
 
         // Respawn the same number of boids, keeping the settings above
         let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
