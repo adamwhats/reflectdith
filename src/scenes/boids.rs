@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::f32::consts::TAU;
 
-use super::{Scene, SceneCtx, SceneView};
+use super::{Scene, SceneCtx, SceneView, WallpaperMode};
 use crate::engine::{camera::CameraUniform, camera::Orbit, gui, vertices::Vertex};
 use glam::{Quat, Vec2, Vec3};
 use rand::RngExt;
@@ -416,6 +416,10 @@ impl Boids {
 }
 
 impl Scene for Boids {
+    fn wallpaper_mode() -> WallpaperMode {
+        WallpaperMode::Span
+    }
+
     fn reset(&mut self) {
         self.boids = spawn_boids(self.boids.len() as u32, self.half_extent);
         self.trail_timer = 0.;

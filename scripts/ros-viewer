@@ -42,10 +42,11 @@ HELP
 done
 if [[ "$mode" == run && -z "$container" && "$image_explicit" == false ]]; then container=auto; fi
 watch=true
-wallpaper=false
 for argument in "$@"; do
   case "$argument" in
-    --wallpaper) wallpaper=true ;;
+    --wallpaper)
+      echo "Robot mode is viewer-only; run reflecdith --wallpaper separately for Boids." >&2
+      exit 2 ;;
     --list-outputs|--list-topics|--probe-ros|--probe-ros=*|--capture-after|--capture-after=*|--benchmark-frames|--benchmark-frames=*|--check-robot)
       watch=false ;;
   esac
@@ -135,18 +136,7 @@ if [[ "$mode" == run ]]; then
     args+=(--env XDG_RUNTIME_DIR=/tmp/viewer-runtime --env WAYLAND_DISPLAY=wayland-viewer
       --volume "$runtime_dir/$WAYLAND_DISPLAY:/tmp/viewer-runtime/wayland-viewer:ro")
   fi
-  if [[ "$wallpaper" == true ]]; then
-    if [[ ! -S "$runtime_dir/bus" ]]; then
-      echo "Wallpaper controls require a session bus at $runtime_dir/bus." >&2
-      exit 1
-    fi
-    wallpaper_config="${XDG_CONFIG_HOME:-$HOME/.config}/reflecdith"
-    mkdir -p "$wallpaper_config"
-    args+=(--env DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/viewer-runtime/bus
-      --volume "$runtime_dir/bus:/tmp/viewer-runtime/bus:ro"
-      --env XDG_CONFIG_HOME=/tmp/viewer-config
-      --volume "$wallpaper_config:/tmp/viewer-config/reflecdith")
-  fi
+
 fi
 # Capture AMENT_PREFIX_PATH before sourcing: selected robot overlays contain mesh packages.
 exec docker run "${args[@]}" --entrypoint /bin/bash "$image" -c '

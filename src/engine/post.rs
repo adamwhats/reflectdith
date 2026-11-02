@@ -9,7 +9,7 @@ use wgpu::{
     RenderPipelineDescriptor, ShaderModule, TextureFormat, TextureView, VertexState, util::DeviceExt,
 };
 
-pub use reflecdith_control::settings::{DEFAULT_BAYER_DENSITY, DEFAULT_LEVELS, MAX_LEVELS, Palette};
+pub use reflecdith_control::settings::{DEFAULT_BAYER_DENSITY, DEFAULT_LEVELS, MAX_LEVELS, Palette, bayer_cell_size};
 
 // CPU-side mirror of the shader's post uniform. The field order and layout
 // must match the WGSL struct
@@ -18,7 +18,7 @@ pub use reflecdith_control::settings::{DEFAULT_BAYER_DENSITY, DEFAULT_LEVELS, MA
 struct PostUniform {
     // Using Vec4 so bytes are aligned in WGSL, w is unused
     tones: [Vec4; MAX_LEVELS as usize],
-    // x is capture scale, y the number of tones, z image/Bayer cells per pixel, w shared grid.
+    // x is capture scale, y the number of tones, z Bayer cell width in pixels, w shared grid.
     block: Vec4,
 }
 
@@ -37,7 +37,7 @@ impl PostUniform {
             block: Vec4::new(
                 block_size as f32,
                 levels as f32,
-                bayer_density.clamp(0.125, 1.),
+                bayer_cell_size(bayer_density) as f32,
                 u32::from(shared_grid) as f32,
             ),
         }

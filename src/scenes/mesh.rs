@@ -27,19 +27,6 @@ fn model_dir() -> PathBuf {
 }
 const DEFAULT_MODEL: &str = "utah_teapot_low";
 
-pub fn model_names() -> Vec<String> {
-    let mut names: Vec<_> = std::fs::read_dir(model_dir())
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "stl"))
-        .map(|path| model_name(&path))
-        .collect();
-    names.sort();
-    names
-}
-
 pub struct MeshScene {
     // The models which can be picked from the dropdown, the index of the one
     // picked, and the index of the one loaded, which is reloaded when they

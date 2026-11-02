@@ -12,8 +12,8 @@ cargo run -- --wallpaper --fps 30
 ```
 
 By default, all connected monitors are used. Boids span the logical desktop
-layout as one shared flock; Mesh and Robot duplicate the same view on every
-monitor. Use `--output DP-1` to restrict any scene to one output. Wallpaper mode
+layout as one shared flock. Mesh and Robot are available in the ordinary viewer.
+Use `--output DP-1` to restrict the wallpaper to one output. Wallpaper mode
 requires Linux, a session bus, a GPU supported by wgpu, and
 a compositor supporting `wlr-layer-shell` (including COSMIC). It never takes
 keyboard focus, consumes pointer input, or reserves space for panels.
@@ -31,12 +31,11 @@ cargo run -- ctl resume
 cargo run -- ctl stop
 ```
 
-Scene IDs are Mesh = 0, Boids = 1, Robot = 2. Robot mode accepts the usual
-`--urdf` and ROS options when starting the wallpaper. The controller cannot
-create a ROS connection in a build without ROS support. The existing
-`scripts/ros-viewer -- --wallpaper` launcher passes the flag through and mounts
-the host session bus and wallpaper settings directory, so the host applet can
-control the container renderer. These extra mounts are only used in wallpaper mode.
+Boids is currently the only wallpaper scene (stable ID 1). Mesh and Robot stay
+in the ordinary viewer, including its ROS container launcher. Saved viewer-only
+scene selections migrate to the first wallpaper scene; control requests for
+unsupported scenes are rejected atomically. `--wallpaper` cannot be combined
+with `--ros` or `--urdf`.
 
 Patches update only named fields. Invalid ranges and unknown field names are
 rejected atomically. Changes reach the renderer between frames, including while
@@ -67,8 +66,7 @@ of moving the camera away. Positions and trail history remap into the new volume
 with steering speed preserved. Soft wall steering has a hard
 containment limit as a backstop. Explicit camera settings keep your chosen
 framing, including any intentional close-up. The service stays alive with
-no monitors and resumes presenting when an output returns. Mesh and Robot instead duplicate one
-shared image, including the same animation time and robot pose.
+no monitors and resumes presenting when an output returns.
 
 The applet's **Simulation speed** slider changes boid simulation time independently
 of the render FPS: 1× is real time, 0.25× is quarter speed, and 0× freezes the flock
@@ -100,7 +98,7 @@ REFLECDITH_BIN="$PWD/target/debug/reflecdith" \
 The same binary runs as a COSMIC panel applet when launched without `--settings`.
 The popup includes scene selection, Dark/Light colour swatches with COSMIC
 colour pickers (colour plane, hue, hex/RGB input, live preview), random/swap,
-dithering, pause/resume, stop, FPS, mesh spin, boid trails, lighting, floor,
+dithering, pause/resume, stop, FPS, boid trails, lighting, floor,
 simulation speed, and advanced flocking settings. Trails and **Reset boids** are
 grouped with the flocking controls under **More settings → Boids**. Reset restores
 boid defaults and respawns the flock with empty trails, preserving the fitted
@@ -108,6 +106,11 @@ volume, palette, and other wallpaper settings. Camera controls are available
 through the CLI rather than the applet. It shows the current
 outputs. Leave the output field blank for all monitors, or enter one output name
 to restrict the wallpaper. Stop and start the wallpaper to change that selection.
+
+Bayer size is selected in whole pixels (1–8 px) in both interfaces. The renderer
+snaps legacy `bayer_density` values to the nearest reciprocal integer cell size.
+This prevents uneven cell widths and large moiré grids from fractional sampling.
+Screenshot scaling enlarges each complete cell by the capture scale.
 
 Slider edits are coalesced while a request is in flight. State-change signals
 keep open controllers updated, with a one-second status/reconnect fallback.
@@ -144,7 +147,7 @@ to `~/.config/reflecdith/settings.json`. Updates are saved atomically after 500 
 without further edits, and flushed on Stop, SIGINT, or SIGTERM. Monitor removal
 keeps the service and simulation running for the remaining outputs.
 Light angle and simulation positions are runtime state, not saved settings.
-Command-line `--fps`, `--no-shadows`, and robot startup options override saved
+Command-line `--fps` and `--no-shadows` override saved
 values for that run; a later settings edit saves the resulting configuration.
 The ordinary viewer starts with its existing defaults and does not overwrite the
 wallpaper settings.
@@ -166,8 +169,6 @@ no network listener.
 
 - Spanning uses the rectangle around all active outputs. Boids can temporarily
   disappear into gaps in an irregular monitor layout; they do not avoid holes.
-- Duplicated Mesh/Robot views keep their aspect ratio. Monitors with a different
-  aspect ratio get bars in the palette's dark colour rather than a stretched view.
 - Monitors present independently. A slow or hidden output can skip frames without
   holding up the flock or other outputs; this is not hardware frame synchronization.
 - Very large layouts are uniformly reduced to fit the GPU texture-size limit.
@@ -178,8 +179,8 @@ no network listener.
 - Settings persist, but named presets and automatic session startup are not yet
   provided. Add the installed wallpaper command to COSMIC Startup Applications
   if you want it launched at login.
-- ROS topic/robot discovery controls remain in the ordinary viewer. The applet
-  controls the selected scene and appearance, but cannot select ROS topics.
+- Mesh and Robot (including ROS discovery) are viewer-only. The applet lists
+  only scenes explicitly enabled for wallpaper mode.
 
 The background uses the Background layer. Other wallpaper programs can occupy
 that same layer, so their startup/order may affect which background is visible;
@@ -195,3 +196,24 @@ cargo test --manifest-path applet/Cargo.toml
 # GPU rendering, monitor-crop, and slow-motion regressions:
 cargo test --bin reflecdith -- --ignored
 ```
+
+## Scene integration
+
+The Wayland host (`src/wallpaper.rs`), desktop geometry (`src/wallpaper/layout.rs`),
+and per-output presentation (`src/wallpaper/present.rs`) are separate from the
+winit viewer. Both use the same rendering engine and `Scene` interface; scenes
+never manage Wayland surfaces or monitor connections.
+
+Each scene declares `Scene::wallpaper_mode()` using `WallpaperMode::{None, Single, Span}`.
+`None` (the default) keeps a scene viewer-only. `Single` repeats one view on each
+monitor; `Span` uses a shared desktop-sized view with a crop for each monitor.
+These static capabilities are collected at registration,
+without constructing scenes or starting ROS. The backend publishes that catalog
+over IPC; the applet offers it automatically, and control patches are checked
+against it. `Scene::fit_wallpaper` handles scene-specific framing and bounds.
+
+To add a scene, implement `Scene`, choose a wallpaper mode, and register its factory in `main`.
+Only scene-specific settings and applet controls need further integration. This
+is reusable within this renderer, rather than a standalone wallpaper library:
+settings and control actions still belong to ReflecDith, and the platform host
+requires Wayland's layer-shell protocol.

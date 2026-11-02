@@ -19,6 +19,11 @@ pub const DEFAULT_LEVELS: u32 = 3;
 pub const MAX_LEVELS: u32 = 16;
 pub const DEFAULT_BAYER_DENSITY: f32 = 0.5;
 
+// Keep density in saved settings for compatibility, but rasterize whole pixels.
+pub fn bayer_cell_size(density: f32) -> u32 {
+    (density.clamp(0.125, 1.).recip().round() as u32).clamp(1, 8)
+}
+
 impl Default for Palette {
     fn default() -> Self {
         Self {
@@ -242,9 +247,6 @@ impl Settings {
         if !(1..=120).contains(&self.fps) {
             return Err("fps must be between 1 and 120".into());
         }
-        if self.selected_scene > 2 {
-            return Err("unknown scene".into());
-        }
         for value in self.palette.dark.iter().chain(&self.palette.light) {
             range("colour channel", *value, 0., 1.)?;
         }
@@ -358,7 +360,7 @@ mod tests {
         for patch in [
             r#"{"fps":0}"#,
             r#"{"levels":99}"#,
-            r#"{"selected_scene":3}"#,
+            r#"{"selected_scene":-1}"#,
             r#"{"bayer_density":0}"#,
             r#"{"shading":{"shininess":0}}"#,
             r#"{"shading":{"typo":2}}"#,

@@ -5,6 +5,8 @@ pub mod boids;
 pub mod mesh;
 pub mod robot;
 
+pub use reflecdith_control::WallpaperMode;
+
 use glam::{Mat4, Vec2, Vec3};
 
 use crate::engine::camera::{CameraUniform, Orbit};
@@ -44,6 +46,14 @@ impl Default for SceneView {
 }
 
 pub trait Scene {
+    // Static capabilities let the wallpaper discover scenes before creating GPU resources.
+    fn wallpaper_mode() -> WallpaperMode
+    where
+        Self: Sized,
+    {
+        WallpaperMode::None
+    }
+
     fn reset(&mut self) {}
 
     // Whether the engine draws the floor, and shows its menu settings
@@ -100,6 +110,7 @@ type Builder = Box<dyn FnOnce(&SceneCtx) -> Box<dyn Scene>>;
 
 struct Slot {
     name: &'static str,
+    wallpaper: reflecdith_control::ipc::WallpaperScene,
     builder: Option<Builder>,
     scene: Option<Box<dyn Scene>>,
     // The camera for this scene, kept while other scenes are shown
@@ -122,14 +133,35 @@ impl Scenes {
     }
 
     // Add a scene under a name, returning its id
-    pub fn register(&mut self, name: &'static str, build: impl FnOnce(&SceneCtx) -> Box<dyn Scene> + 'static) -> usize {
+    pub fn register<S: Scene + 'static>(
+        &mut self,
+        name: &'static str,
+        build: impl FnOnce(&SceneCtx) -> S + 'static,
+    ) -> usize {
         self.slots.push(Slot {
             name,
-            builder: Some(Box::new(build)),
+            wallpaper: reflecdith_control::ipc::WallpaperScene {
+                id: self.slots.len(),
+                name: name.into(),
+                mode: S::wallpaper_mode(),
+            },
+            builder: Some(Box::new(move |ctx| Box::new(build(ctx)))),
             scene: None,
             orbit: Orbit::default(),
         });
         self.slots.len() - 1
+    }
+
+    pub fn wallpaper_scenes(&self) -> Vec<reflecdith_control::ipc::WallpaperScene> {
+        self.slots
+            .iter()
+            .filter(|s| s.wallpaper.mode != WallpaperMode::None)
+            .map(|s| s.wallpaper.clone())
+            .collect()
+    }
+
+    pub fn wallpaper_mode(&self, id: usize) -> WallpaperMode {
+        self.slots[id].wallpaper.mode
     }
 
     pub fn names(&self) -> Vec<&'static str> {
@@ -170,5 +202,24 @@ impl Scenes {
             slot.scene.as_deref_mut().expect("Scene shown before it was activated"),
             &mut slot.orbit,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn wallpaper_discovery_is_opt_in_and_does_not_build_viewer_scenes() {
+        let mut scenes = Scenes::new();
+        scenes.register::<mesh::MeshScene>("Mesh", |_| panic!("must remain lazy"));
+        scenes.register::<boids::Boids>("Boids", |_| panic!("must remain lazy"));
+        scenes.register::<robot::RobotScene>("Robot", |_| panic!("must remain lazy"));
+        let catalog = scenes.wallpaper_scenes();
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].id, 1);
+        assert_eq!(catalog[0].name, "Boids");
+        assert_eq!(catalog[0].mode, WallpaperMode::Span);
+        assert_eq!(scenes.wallpaper_mode(0), WallpaperMode::None);
+        assert_eq!(scenes.wallpaper_mode(2), WallpaperMode::None);
     }
 }

@@ -260,7 +260,12 @@ impl Gui {
                         ui.heading("Dithering");
                         checkbox_row(ui, "Shared grid", shared_grid);
                         value_slider(ui, "Levels", levels, 2..=post::MAX_LEVELS, 0, "");
-                        value_slider(ui, "Bayer density", bayer_density, 0.125..=1.0, 2, "×");
+                        let mut cell_size = post::bayer_cell_size(*bayer_density);
+                        let old_size = cell_size;
+                        value_slider(ui, "Bayer cell", &mut cell_size, 1..=8, 0, " px");
+                        if cell_size != old_size {
+                            *bayer_density = 1. / cell_size as f32;
+                        }
                         if has_floor {
                             value_slider(
                                 ui,

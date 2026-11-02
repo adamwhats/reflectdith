@@ -43,6 +43,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cli.wallpaper && (cli.benchmark_frames.is_some() || cli.capture_after.is_some()) {
         return Err("Wallpaper mode does not support benchmark or timed capture; use the ordinary viewer".into());
     }
+    if cli.wallpaper && (cli.robot.ros || cli.robot.urdf.is_some()) {
+        return Err("Robot scenes are only available in the ordinary viewer; omit --wallpaper".into());
+    }
     let options = &cli.robot;
     let initial_robot = if let Some(path) = &options.urdf {
         let xml = std::fs::read_to_string(path)?;
@@ -123,8 +126,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Every scene the View row offers, in order. Each is built the first time
     // it is shown
     let mut scenes = Scenes::new();
-    let mesh = scenes.register("Mesh", |ctx| Box::new(MeshScene::new(ctx)));
-    scenes.register("Boids", |ctx| Box::new(Boids::new(ctx.device, 64)));
+    let mesh = scenes.register("Mesh", |ctx| MeshScene::new(ctx));
+    scenes.register("Boids", |ctx| Boids::new(ctx.device, 64));
     let startup = robot::Startup {
         options: options.clone(),
         live,
@@ -132,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "ros2")]
         connection: ros_connection,
     };
-    let robot = scenes.register("Robot", move |ctx| Box::new(robot::RobotScene::new(ctx, startup)));
+    let robot = scenes.register("Robot", move |ctx| robot::RobotScene::new(ctx, startup));
     // Start on the robot when one was given on the command line
     let initial_scene = if options.ros || options.urdf.is_some() {
         robot
@@ -142,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if cli.wallpaper || cli.list_outputs {
         #[cfg(target_os = "linux")]
-        return wallpaper::run(cli, scenes, initial_scene);
+        return wallpaper::run(cli, scenes);
         #[cfg(not(target_os = "linux"))]
         return Err("Wallpaper mode requires Linux and Wayland".into());
     }

@@ -25,8 +25,7 @@ cargo run -- ctl pause
 cargo run -- ctl stop
 ```
 
-Boids span the monitor layout as one flock; Mesh and Robot duplicate across
-monitors. Use `--output DP-1` to restrict the wallpaper to one display. A separate
+Boids span the monitor layout as one flock. Mesh and Robot remain viewer-only. Use `--output DP-1` to restrict the wallpaper to one display. A separate
 COSMIC panel applet and standalone settings window provide live controls,
 including simulation speed for slow motion. See [wallpaper setup and controls](docs/wallpaper.md) for building,
 installation, saved settings, and current limitations.

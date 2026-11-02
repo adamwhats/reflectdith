@@ -5,7 +5,7 @@ use cosmic::widget::color_picker::{ColorPickerModel, ColorPickerUpdate};
 use cosmic::{prelude::*, widget};
 use palette::{FromColor, Srgb};
 use reflecdith_control::{
-    Settings,
+    Settings, WallpaperMode,
     ipc::{self, State},
     settings::Palette,
 };
@@ -47,7 +47,6 @@ pub enum Message {
     EditColour(ColourSlot),
     Picker(ColorPickerUpdate),
     Output(String),
-    Model(usize),
 }
 
 fn merge(target: &mut Value, patch: Value) {
@@ -203,48 +202,31 @@ impl cosmic::Application for Applet {
                 .spacing(8)
                 .into(),
             );
-            rows.push(
-                widget::row::with_children(
-                    ["Mesh", "Boids", "Robot"]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, name)| {
-                            let label = if index == s.selected_scene {
-                                format!("• {name}")
-                            } else {
-                                name.into()
-                            };
-                            widget::button::text(label)
-                                .on_press(Message::Patch(json!({"selected_scene":index})))
-                                .into()
-                        })
-                        .collect::<Vec<Element<'_, Message>>>(),
-                )
-                .spacing(4)
-                .into(),
-            );
-            if s.selected_scene == 0 {
-                let selected = s
-                    .scene
-                    .mesh_model
-                    .as_ref()
-                    .and_then(|name| state.models.iter().position(|model| model == name))
-                    .or_else(|| state.models.iter().position(|name| name == "utah_teapot_low"));
-                let names = &state.models;
-                if !names.is_empty() {
-                    rows.push(widget::dropdown(names, selected, Message::Model).into());
-                }
-                rows.push(slider(
-                    format!("Mesh spin: {:.0}°/s", s.scene.mesh_speed),
-                    s.scene.mesh_speed,
-                    -180.,
-                    180.,
-                    |v| json!({"scene":{"mesh_speed":v}}),
-                ));
+            if state.scenes.len() > 1 {
+                rows.push(
+                    widget::row::with_children(
+                        state
+                            .scenes
+                            .iter()
+                            .map(|scene| {
+                                let label = if scene.id == s.selected_scene {
+                                    format!("• {}", scene.name)
+                                } else {
+                                    scene.name.clone()
+                                };
+                                widget::button::text(label)
+                                    .on_press(Message::Patch(json!({"selected_scene":scene.id})))
+                                    .into()
+                            })
+                            .collect::<Vec<Element<'_, Message>>>(),
+                    )
+                    .spacing(4)
+                    .into(),
+                );
             }
             if s.selected_scene == 1 {
                 rows.push(
-                    widget::text(if state.spanning {
+                    widget::text(if state.wallpaper_mode == WallpaperMode::Span {
                         "One flock across the monitor layout"
                     } else {
                         "One flock on this monitor"
@@ -318,13 +300,19 @@ impl cosmic::Application for Applet {
                 16.,
                 |v| json!({"levels":v.round() as u32}),
             ));
-            rows.push(slider(
-                format!("Bayer density: {:.2}×", s.bayer_density),
-                s.bayer_density,
-                0.125,
-                1.,
-                |v| json!({"bayer_density":v}),
-            ));
+            let cell_size = reflecdith_control::settings::bayer_cell_size(s.bayer_density);
+            rows.push(
+                widget::column::with_children(vec![
+                    widget::text(format!("Bayer cell size: {cell_size} px")).into(),
+                    widget::slider(1..=8, cell_size, |size| {
+                        Message::Patch(json!({"bayer_density":1. / size as f32}))
+                    })
+                    .step(1_u32)
+                    .into(),
+                ])
+                .spacing(4)
+                .into(),
+            );
             rows.push(
                 widget::settings::item(
                     "Shared pixel grid",
@@ -656,11 +644,6 @@ impl cosmic::Application for Applet {
                 }
             }
             Message::Output(value) => self.output = value,
-            Message::Model(index) => {
-                if let Some(name) = self.state.as_ref().and_then(|state| state.models.get(index)).cloned() {
-                    return self.update(Message::Patch(json!({"scene":{"mesh_model":name}})));
-                }
-            }
             Message::Start => {
                 let output = self.output.clone();
                 self.busy = true;

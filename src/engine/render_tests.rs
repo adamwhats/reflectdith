@@ -122,28 +122,7 @@ fn geometry_shadow_and_material_edges_fill_complete_output_cells() {
     );
     let output = target(&device, format);
     let view = output.create_view(&Default::default());
-    for (capture_scale, density, shared_grid) in [
-        (1, 0.125, true),
-        (2, 0.125, true),
-        (1, 0.5, true),
-        (1, 0.3, true),
-        (2, 0.3, true),
-        (1, 1., true),
-        (2, 1., true),
-        (1, 0.125, false),
-        (1, 0.125, true),
-    ] {
-        post.write_uniform(
-            &queue,
-            &post::Palette {
-                dark: [0.; 3],
-                light: [1.; 3],
-            },
-            capture_scale,
-            3,
-            density,
-            shared_grid,
-        );
+    let render = || {
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -163,17 +142,41 @@ fn geometry_shadow_and_material_edges_fill_complete_output_cells() {
             pass.draw(0..3, 0..1);
         }
         queue.submit(Some(encoder.finish()));
+    };
+    for (capture_scale, density, shared_grid) in [
+        (1, 0.125, true),
+        (2, 0.125, true),
+        (1, 0.5, true),
+        (1, 0.3, true),
+        (1, 0.67, true),
+        (1, 0.50125, true),
+        (2, 0.3, true),
+        (1, 1., true),
+        (2, 1., true),
+        (1, 0.125, false),
+        (1, 0.125, true),
+    ] {
+        post.write_uniform(
+            &queue,
+            &post::Palette {
+                dark: [0.; 3],
+                light: [1.; 3],
+            },
+            capture_scale,
+            3,
+            density,
+            shared_grid,
+        );
+        render();
         let pixels = read_pixels(&device, &queue, &output, 4);
         let pixel = |x: u32, y: u32| &pixels[((y * SIZE + x) * 4) as usize..((y * SIZE + x) * 4 + 4) as usize];
+        let cell_width = post::bayer_cell_size(density) * capture_scale;
         let mut colours = HashSet::new();
         let mut cells = HashMap::new();
         let mut split_cells = false;
         for y in 0..SIZE {
             for x in 0..SIZE {
-                let key = (
-                    ((x as f32 + 0.5) * density / capture_scale as f32).floor() as i32,
-                    ((y as f32 + 0.5) * density / capture_scale as f32).floor() as i32,
-                );
+                let key = ((x / cell_width) as i32, (y / cell_width) as i32);
                 let expected = cells.entry(key).or_insert_with(|| pixel(x, y).to_vec());
                 split_cells |= pixel(x, y) != expected.as_slice();
                 if shared_grid {
@@ -192,6 +195,57 @@ fn geometry_shadow_and_material_edges_fill_complete_output_cells() {
                 split_cells,
                 "disabling the shared grid must restore edges within Bayer cells"
             );
+        }
+    }
+    // The previous fractional grid produced a much larger repeating structure.
+    // A uniform surface must repeat exactly after one 8x8 Bayer tile, including
+    // legacy densities near 2/3 and 1/2 and enlarged screenshot pixels.
+    let flat = vec![[0.25_f32, 0.25, 0.25, 1.]; (SIZE * SIZE) as usize];
+    queue.write_texture(
+        input.as_image_copy(),
+        bytemuck::cast_slice(&flat),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(SIZE * 16),
+            rows_per_image: Some(SIZE),
+        },
+        wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+    );
+    for (density, capture_scale) in [(0.67, 1), (0.50125, 1), (0.3, 1), (0.3, 2)] {
+        post.write_uniform(
+            &queue,
+            &post::Palette {
+                dark: [0.; 3],
+                light: [1.; 3],
+            },
+            capture_scale,
+            2,
+            density,
+            true,
+        );
+        render();
+        let pixels = read_pixels(&device, &queue, &output, 4);
+        let pixel = |x: u32, y: u32| &pixels[((y * SIZE + x) * 4) as usize..((y * SIZE + x) * 4 + 4) as usize];
+        let period = 8 * post::bayer_cell_size(density) * capture_scale;
+        assert!(period < SIZE);
+        assert!(pixels.chunks_exact(4).map(|c| c.to_vec()).collect::<HashSet<_>>().len() > 1);
+        for y in 0..SIZE - period {
+            for x in 0..SIZE - period {
+                assert_eq!(
+                    pixel(x, y),
+                    pixel(x + period, y),
+                    "horizontal phase beat at density {density}"
+                );
+                assert_eq!(
+                    pixel(x, y),
+                    pixel(x, y + period),
+                    "vertical phase beat at density {density}"
+                );
+            }
         }
     }
 }

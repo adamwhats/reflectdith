@@ -1,4 +1,4 @@
-use crate::Settings;
+use crate::{Settings, WallpaperMode};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,13 +12,22 @@ pub struct State {
     pub revision: u64,
     pub settings: Settings,
     pub output: String,
-    pub models: Vec<String>,
+    #[serde(default)]
+    pub scenes: Vec<WallpaperScene>,
     #[serde(default)]
     pub outputs: Vec<Output>,
     #[serde(default)]
     pub target_output: Option<String>,
     #[serde(default)]
-    pub spanning: bool,
+    pub wallpaper_mode: WallpaperMode,
+}
+
+/// Scenes explicitly offered by the wallpaper application, with stable IDs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WallpaperScene {
+    pub id: usize,
+    pub name: String,
+    pub mode: WallpaperMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -35,7 +44,7 @@ pub struct Store {
     pub state: State,
     dirty_since: Option<Instant>,
     pub stop: bool,
-    pub reset_boids: bool,
+    pub reset_scene: Option<usize>,
 }
 
 impl Store {
@@ -45,33 +54,62 @@ impl Store {
                 revision: 0,
                 settings,
                 output,
-                models: Vec::new(),
+                scenes: Vec::new(),
                 outputs: Vec::new(),
                 target_output: None,
-                spanning: false,
+                wallpaper_mode: WallpaperMode::None,
             },
             dirty_since: None,
             stop: false,
-            reset_boids: false,
+            reset_scene: None,
         }
     }
+    pub fn wallpaper(mut settings: Settings, mut scenes: Vec<WallpaperScene>) -> Result<Self, String> {
+        scenes.retain(|s| s.mode != WallpaperMode::None);
+        let old_selection = settings.selected_scene;
+        let first = scenes.first().ok_or("No scenes support wallpaper mode")?;
+        if !scenes.iter().any(|s| s.id == settings.selected_scene) {
+            settings.selected_scene = first.id;
+        }
+        let mut store = Self::new(settings, String::new());
+        store.state.wallpaper_mode = scenes
+            .iter()
+            .find(|s| s.id == store.state.settings.selected_scene)
+            .unwrap()
+            .mode;
+        store.state.scenes = scenes;
+        if old_selection != store.state.settings.selected_scene {
+            store.dirty_since = Some(Instant::now());
+        }
+        Ok(store)
+    }
+
     pub fn patch(&mut self, patch: &str) -> Result<String, String> {
         let next = self.state.settings.patched(patch)?;
-        if let Some(name) = &next.scene.mesh_model {
-            if !self.state.models.is_empty() && !self.state.models.contains(name) {
-                return Err(format!("Unknown mesh model: {name}"));
-            }
+        if !self.state.scenes.is_empty() && !self.state.scenes.iter().any(|s| s.id == next.selected_scene) {
+            return Err("Scene is not available as a wallpaper".into());
         }
         if next != self.state.settings {
             self.state.settings = next;
+            if let Some(scene) = self
+                .state
+                .scenes
+                .iter()
+                .find(|s| s.id == self.state.settings.selected_scene)
+            {
+                self.state.wallpaper_mode = scene.mode;
+            }
             self.state.revision += 1;
             self.dirty_since = Some(Instant::now());
         }
         self.json()
     }
     pub fn reset_boids(&mut self) -> Result<String, String> {
+        if !self.state.scenes.is_empty() && !self.state.scenes.iter().any(|s| s.id == 1) {
+            return Err("Boids is not available as a wallpaper".into());
+        }
         self.state.settings.scene.boids = Default::default();
-        self.reset_boids = true;
+        self.reset_scene = Some(1);
         self.state.revision += 1;
         self.dirty_since = Some(Instant::now());
         self.json()
@@ -204,6 +242,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wallpaper_catalog_migrates_old_selection_and_rejects_viewer_only_scenes() {
+        let mut store = Store::wallpaper(
+            Settings::default(),
+            vec![WallpaperScene {
+                id: 1,
+                name: "Boids".into(),
+                mode: WallpaperMode::Span,
+            }],
+        )
+        .unwrap();
+        assert_eq!(store.state.settings.selected_scene, 1);
+        for id in [0, 2, 99] {
+            let before = store.state.settings.clone();
+            assert!(store.patch(&format!(r#"{{"selected_scene":{id},"fps":10}}"#)).is_err());
+            assert_eq!(store.state.settings, before);
+        }
+        assert!(store.patch(r#"{"selected_scene":1,"fps":10}"#).is_ok());
+        assert!(Store::wallpaper(Settings::default(), vec![]).is_err());
+    }
+
+    #[test]
+    fn single_mode_and_future_scene_ids_are_supported_without_enabling_none() {
+        let mut store = Store::wallpaper(
+            Settings::default(),
+            vec![
+                WallpaperScene {
+                    id: 0,
+                    name: "Viewer only".into(),
+                    mode: WallpaperMode::None,
+                },
+                WallpaperScene {
+                    id: 7,
+                    name: "Future wallpaper".into(),
+                    mode: WallpaperMode::Single,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(store.state.scenes.len(), 1);
+        assert_eq!(store.state.settings.selected_scene, 7);
+        assert!(store.patch(r#"{"selected_scene":0}"#).is_err());
+        assert!(store.patch(r#"{"selected_scene":7}"#).is_ok());
+        assert_eq!(store.state.scenes[0].mode, WallpaperMode::Single);
+    }
+
+    #[test]
     fn rejected_patch_does_not_mutate_state() {
         let mut store = Store::new(Settings::default(), "DP-1".into());
         assert!(store.patch(r#"{"levels":4,"fps":0}"#).is_err());
@@ -226,11 +310,11 @@ mod tests {
         store.reset_boids().unwrap();
         settings.scene.boids = Default::default();
         assert_eq!(store.state.settings, settings);
-        assert!(store.reset_boids);
+        assert_eq!(store.reset_scene, Some(1));
         assert_eq!(store.state.revision, 1);
-        store.reset_boids = false;
+        store.reset_scene = None;
         store.reset_boids().unwrap();
-        assert!(store.reset_boids);
+        assert_eq!(store.reset_scene, Some(1));
         assert_eq!(store.state.revision, 2);
     }
 
@@ -269,7 +353,7 @@ mod tests {
         assert!(received.settings.paused);
         let reset = reset_boids().unwrap();
         assert_eq!(reset.revision, 2);
-        assert!(store.lock().unwrap().reset_boids);
+        assert_eq!(store.lock().unwrap().reset_scene, Some(1));
         assert_eq!(reset.settings.levels, 5);
         stop().unwrap();
         assert!(store.lock().unwrap().stop);

@@ -11,7 +11,7 @@ use layout::{Desktop, Rect};
 use present::{Canvas, Mapping, Presenter};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle};
 use reflecdith_control::{
-    Settings,
+    Settings, WallpaperMode,
     ipc::{self, Output, SharedStore, Store},
     settings,
 };
@@ -40,7 +40,7 @@ use wayland_client::{
     protocol::{wl_output, wl_surface},
 };
 
-pub fn run(cli: Cli, scenes: Scenes, initial_scene: usize) -> Result<(), Box<dyn Error>> {
+pub fn run(cli: Cli, scenes: Scenes) -> Result<(), Box<dyn Error>> {
     let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         signal_hook::flag::register(signal, stopped.clone())?;
@@ -97,10 +97,6 @@ pub fn run(cli: Cli, scenes: Scenes, initial_scene: usize) -> Result<(), Box<dyn
     }
     let config_path = settings::config_path()?;
     app.settings = settings::load(&config_path)?;
-    if cli.robot.ros || cli.robot.urdf.is_some() {
-        app.settings.selected_scene = initial_scene;
-        app.settings.controls.light_speed = 0.;
-    }
     if let Some(fps) = cli.fps {
         app.settings.fps = fps;
     }
@@ -108,19 +104,9 @@ pub fn run(cli: Cli, scenes: Scenes, initial_scene: usize) -> Result<(), Box<dyn
         app.settings.shading.shadow_strength = 0.;
     }
     app.settings.validate()?;
-    let models = crate::scenes::mesh::model_names();
-    if app
-        .settings
-        .scene
-        .mesh_model
-        .as_ref()
-        .is_some_and(|name| !models.contains(name))
-    {
-        eprintln!("Saved mesh model is unavailable; using the default model");
-        app.settings.scene.mesh_model = None;
-    }
-    let store: SharedStore = Arc::new(Mutex::new(Store::new(app.settings.clone(), String::new())));
-    store.lock().unwrap().state.models = models;
+    let initial_store = Store::wallpaper(app.settings.clone(), app.scenes.wallpaper_scenes())?;
+    app.settings = initial_store.state.settings.clone();
+    let store: SharedStore = Arc::new(Mutex::new(initial_store));
     let _service = ipc::serve(store.clone())?;
     app.reconcile(&compositor, &shell, &qh)?;
     let mut event_loop = calloop::EventLoop::<Wallpaper>::try_new()?;
@@ -148,8 +134,8 @@ pub fn run(cli: Cli, scenes: Scenes, initial_scene: usize) -> Result<(), Box<dyn
                     app.revision = store.state.revision;
                     app.invalidate();
                 }
-                if std::mem::take(&mut store.reset_boids) {
-                    app.scenes.reset(1);
+                if let Some(id) = store.reset_scene.take() {
+                    app.scenes.reset(id);
                     app.invalidate();
                 }
                 store.flush(&config_path, false)?;
@@ -343,7 +329,7 @@ impl Wallpaper {
             .iter()
             .find(|m| Some(&m.name) == self.reference.as_ref())
             .unwrap();
-        let (width, height) = if self.settings.selected_scene == 1 {
+        let (width, height) = if self.scenes.wallpaper_mode(self.settings.selected_scene) == WallpaperMode::Span {
             (desktop.width, desktop.height)
         } else {
             (reference.rect.width as f64, reference.rect.height as f64)
@@ -433,7 +419,7 @@ impl Wallpaper {
             .collect::<Vec<_>>()
             .join(", ");
         store.state.target_output = self.target.clone();
-        store.state.spanning = self.settings.selected_scene == 1;
+        store.state.wallpaper_mode = self.scenes.wallpaper_mode(self.settings.selected_scene);
     }
     fn draw(&mut self, qh: &QueueHandle<Self>) {
         let desktop = self.desktop();
@@ -514,7 +500,7 @@ impl Wallpaper {
                     continue;
                 }
             };
-            let spanning = self.settings.selected_scene == 1;
+            let spanning = self.scenes.wallpaper_mode(self.settings.selected_scene) == WallpaperMode::Span;
             let size = (gpu.config.width, gpu.config.height);
             let mapping = Mapping {
                 crop: if spanning {
