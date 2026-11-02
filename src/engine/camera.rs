@@ -171,6 +171,12 @@ impl Orbit {
         self.distance = 3.5;
     }
 
+    // Back far enough for a sphere of this radius around the origin to fill
+    // the view's height
+    pub fn fit_sphere(&mut self, radius: f32) {
+        self.distance = (radius / (FOV_Y / 2.0).sin()).clamp(MIN_DISTANCE, MAX_DISTANCE);
+    }
+
     // Where the camera is in world space
     fn eye(&self) -> Vec3 {
         self.distance

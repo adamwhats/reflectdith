@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // it is shown
     let mut scenes = Scenes::new();
     let mesh = scenes.register("Mesh", |ctx| Box::new(MeshScene::new(ctx)));
-    scenes.register("Boids", |ctx| Box::new(Boids::new(ctx.device, 32)));
+    scenes.register("Boids", |ctx| Box::new(Boids::new(ctx.device, 64)));
     let startup = robot::Startup {
         options: options.clone(),
         live,
