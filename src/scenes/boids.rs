@@ -206,6 +206,11 @@ pub struct Boids {
     num_vertices: u32,
     vertex_buffer: wgpu::Buffer,
     drawn_vertices: Vec<Vertex>,
+    // Reused across simulation steps and uploads, including delayed frames.
+    accelerations: Vec<Vec3>,
+    visible: Vec<(f32, usize)>,
+    trail_points: Vec<Vec3>,
+    trail_rings: Vec<Vec3>,
     shadow_revision: u64,
     view_distance: f32,
     neighbours: usize,
@@ -242,6 +247,10 @@ impl Boids {
                 mapped_at_creation: false,
             }),
             drawn_vertices: Vec::with_capacity(max_vertices),
+            accelerations: Vec::with_capacity(num_boids as usize),
+            visible: Vec::with_capacity(num_boids as usize),
+            trail_points: Vec::with_capacity(MAX_TRAIL_POINTS + 1),
+            trail_rings: Vec::with_capacity((MAX_TRAIL_POINTS + 1) * BOID_FACES as usize),
             shadow_revision: 0,
             view_distance: VIEW_DISTANCE,
             neighbours: NEIGHBOURS,
@@ -268,8 +277,9 @@ impl Boids {
         let trail_points = ((self.trail_length / TRAIL_INTERVAL).round() as usize).min(MAX_TRAIL_POINTS);
 
         // Calculate accelerations
-        let mut accelerations = vec![];
-        let mut visible = vec![];
+        let accelerations = &mut self.accelerations;
+        accelerations.clear();
+        let visible = &mut self.visible;
         for this in self.boids.iter() {
             // Find the boids in range and in front, as (distance, index)
             let dist_range = f32::EPSILON..=self.view_distance;
@@ -285,7 +295,7 @@ impl Boids {
 
             // Only follow the nearest few, so a group can split when one side
             // turns away rather than every boid following the whole flock
-            visible.sort_by(|a, b| a.0.total_cmp(&b.0));
+            visible.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
             visible.truncate(self.neighbours);
 
             let mut separation = Vec3::ZERO;
@@ -311,8 +321,8 @@ impl Boids {
         }
 
         // Update boids
-        for (boid, acceleration) in self.boids.iter_mut().zip(accelerations) {
-            boid.velocity += acceleration * dt;
+        for (boid, acceleration) in self.boids.iter_mut().zip(accelerations.iter()) {
+            boid.velocity += *acceleration * dt;
             boid.velocity = boid.velocity.clamp_length(MIN_SPEED, MAX_SPEED);
             boid.steer_from_walls(self.half_extent, dt);
             boid.position += boid.velocity * dt;
@@ -330,8 +340,8 @@ impl Boids {
         self.drawn_vertices.clear();
 
         let sides = BOID_FACES as usize;
-        let mut points = vec![];
-        let mut rings = vec![];
+        let points = &mut self.trail_points;
+        let rings = &mut self.trail_rings;
         for boid in self.boids.iter() {
             // Transform geom to the new positions
             for v in self.geom.iter() {
@@ -339,6 +349,10 @@ impl Boids {
                     position: (boid.rotation * Vec3::from(v.position) + boid.position).into(),
                     normal: (boid.rotation * Vec3::from(v.normal)).into(),
                 });
+            }
+
+            if boid.trail.is_empty() {
+                continue;
             }
 
             // The trail is a tube from the boid back through its past
@@ -408,10 +422,6 @@ impl Boids {
         // Write transformed vertices to queue
         self.num_vertices = self.drawn_vertices.len() as u32;
         queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.drawn_vertices));
-    }
-
-    pub fn gpu_bytes(&self) -> u64 {
-        return self.vertex_buffer.size();
     }
 }
 
@@ -510,19 +520,25 @@ impl Scene for Boids {
 
     fn ui(&mut self, ui: &mut egui::Ui, settings: &mut reflecdith_control::settings::SceneSettings) {
         let settings = &mut settings.boids;
-        gui::value_slider(ui, "Simulation speed", &mut settings.time_scale, 0.0..=2.0, 2, "×");
-        gui::value_slider(ui, "View distance", &mut settings.view_distance, 0.0..=2.0, 2, "");
+        let mut percent = settings.time_scale * 100.;
+        let previous = percent;
+        gui::value_slider_step(ui, "Speed", &mut percent, 0.0..=200.0, 0, "%", 10.);
+        if percent != previous {
+            settings.time_scale = percent / 100.;
+        }
+        gui::value_slider_step(ui, "View distance", &mut settings.view_distance, 0.0..=2.0, 2, "", 0.05);
         gui::value_slider(ui, "Neighbours", &mut settings.neighbours, 1..=20, 0, "");
-        gui::value_slider(ui, "Separation", &mut settings.separation, 0.0..=1.0, 2, "");
+        gui::value_slider_step(ui, "Separation", &mut settings.separation, 0.0..=1.0, 2, "", 0.05);
         gui::value_slider(ui, "Alignment", &mut settings.alignment, 0.0..=10.0, 1, "");
         gui::value_slider(ui, "Cohesion", &mut settings.cohesion, 0.0..=10.0, 1, "");
-        gui::value_slider(
+        gui::value_slider_step(
             ui,
             "Trails",
             &mut settings.trail_length,
             0.0..=MAX_TRAIL_LENGTH,
             2,
             " s",
+            0.1,
         );
 
         // Respawn the same number of boids, keeping the settings above

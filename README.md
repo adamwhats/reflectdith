@@ -164,7 +164,12 @@ contrasting hues with readable brightness contrast. **Swap colours** exchanges t
 buttons affect only their own section. The camera keeps its orbit and zoom relative to the followed footprint.
 Rotation can reach ground level below the model centre; camera height stays just above the floor, even when zooming.
 
-Normal viewing is capped at **60 FPS**. Benchmark runs remain uncapped.
+The windowed viewer offers **30 / 60 / Uncapped FPS** controls under Scene (60 FPS by
+default). Wallpaper FPS is controlled separately in the applet. Capped modes keep a
+steady deadline cadence after late wake-ups and skip missed rendering slots;
+benchmarks remain uncapped.
+Uncapped removes the application timer and requests the fastest available
+presentation mode; the compositor and driver can still limit throughput.
 
 ### Run without Docker
 

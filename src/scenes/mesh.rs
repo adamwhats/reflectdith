@@ -129,6 +129,6 @@ impl Scene for MeshScene {
             }
         });
         settings.mesh_model = Some(model_name(&models[*selected_model]));
-        gui::value_slider(ui, "Spin", &mut settings.mesh_speed, -180.0..=180.0, 0, "°/s");
+        gui::value_slider_step(ui, "Spin", &mut settings.mesh_speed, -180.0..=180.0, 0, "°/s", 10.);
     }
 }

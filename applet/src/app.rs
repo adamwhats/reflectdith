@@ -116,12 +116,13 @@ fn slider<'a>(
     value: f32,
     min: f32,
     max: f32,
+    step: f32,
     patch: impl Fn(f32) -> Value + 'a,
 ) -> Element<'a, Message> {
     widget::column::with_children(vec![
         widget::text(label).into(),
         widget::slider(min..=max, value, move |v| Message::Patch(patch(v)))
-            .step((max - min) / 100.)
+            .step(step)
             .into(),
     ])
     .spacing(4)
@@ -234,11 +235,12 @@ impl cosmic::Application for Applet {
                     .into(),
                 );
                 rows.push(slider(
-                    format!("Simulation speed: {:.2}×", s.scene.boids.time_scale),
-                    s.scene.boids.time_scale,
+                    format!("Simulation speed: {:.0}%", s.scene.boids.time_scale * 100.),
+                    s.scene.boids.time_scale * 100.,
                     0.,
-                    2.,
-                    |v| json!({"scene":{"boids":{"time_scale":v}}}),
+                    200.,
+                    10.,
+                    |v| json!({"scene":{"boids":{"time_scale":v / 100.}}}),
                 ));
             }
             rows.push(widget::text::heading("Colours").into());
@@ -298,6 +300,7 @@ impl cosmic::Application for Applet {
                 s.levels as f32,
                 2.,
                 16.,
+                1.,
                 |v| json!({"levels":v.round() as u32}),
             ));
             let cell_size = reflecdith_control::settings::bayer_cell_size(s.bayer_density);
@@ -320,13 +323,25 @@ impl cosmic::Application for Applet {
                 )
                 .into(),
             );
-            rows.push(slider(
-                format!("Frame limit: {} FPS", s.fps),
-                s.fps as f32,
-                1.,
-                120.,
-                |v| json!({"fps":v.round() as u32}),
-            ));
+            rows.push(
+                widget::row::with_children(
+                    [30_u32, 60]
+                        .into_iter()
+                        .map(|fps| {
+                            let label = if s.fps == fps {
+                                format!("• {fps} FPS")
+                            } else {
+                                format!("{fps} FPS")
+                            };
+                            widget::button::text(label)
+                                .on_press(Message::Patch(json!({"fps":fps})))
+                                .into()
+                        })
+                        .collect::<Vec<Element<'_, Message>>>(),
+                )
+                .spacing(8)
+                .into(),
+            );
             rows.push(
                 widget::button::text(if self.advanced {
                     "Hide more settings"
@@ -342,6 +357,7 @@ impl cosmic::Application for Applet {
                     s.controls.light_speed,
                     -180.,
                     180.,
+                    5.,
                     |v| json!({"controls":{"light_speed":v}}),
                 ));
                 rows.push(slider(
@@ -349,6 +365,7 @@ impl cosmic::Application for Applet {
                     s.shading.shadow_strength,
                     0.,
                     1.,
+                    0.05,
                     |v| json!({"shading":{"shadow_strength":v}}),
                 ));
                 rows.push(slider(
@@ -356,6 +373,7 @@ impl cosmic::Application for Applet {
                     s.shading.shininess,
                     1.,
                     64.,
+                    1.,
                     |v| json!({"shading":{"shininess":v}}),
                 ));
                 rows.push(slider(
@@ -363,6 +381,7 @@ impl cosmic::Application for Applet {
                     s.shading.specular_strength,
                     0.,
                     3.,
+                    0.05,
                     |v| json!({"shading":{"specular_strength":v}}),
                 ));
                 rows.push(slider(
@@ -370,6 +389,7 @@ impl cosmic::Application for Applet {
                     s.shading.floor_brightness,
                     0.,
                     2.,
+                    0.05,
                     |v| json!({"shading":{"floor_brightness":v}}),
                 ));
                 rows.push(slider(
@@ -377,6 +397,7 @@ impl cosmic::Application for Applet {
                     s.shading.floor_noise_density,
                     16.,
                     256.,
+                    16.,
                     |v| json!({"shading":{"floor_noise_density":v}}),
                 ));
                 rows.push(slider(
@@ -384,6 +405,7 @@ impl cosmic::Application for Applet {
                     s.shading.floor_fade_start,
                     0.,
                     6.,
+                    0.1,
                     |v| json!({"shading":{"floor_fade_start":v}}),
                 ));
                 rows.push(slider(
@@ -391,6 +413,7 @@ impl cosmic::Application for Applet {
                     s.shading.floor_fade_end,
                     0.,
                     32.,
+                    0.1,
                     |v| json!({"shading":{"floor_fade_end":v}}),
                 ));
                 if s.selected_scene == 1 {
@@ -407,6 +430,7 @@ impl cosmic::Application for Applet {
                         s.scene.boids.trail_length,
                         0.,
                         3.,
+                        0.1,
                         |v| json!({"scene":{"boids":{"trail_length":v}}}),
                     ));
 
@@ -415,6 +439,7 @@ impl cosmic::Application for Applet {
                         b.view_distance,
                         0.,
                         2.,
+                        0.05,
                         |v| json!({"scene":{"boids":{"view_distance":v}}}),
                     ));
                     rows.push(slider(
@@ -422,6 +447,7 @@ impl cosmic::Application for Applet {
                         b.neighbours as f32,
                         1.,
                         20.,
+                        1.,
                         |v| json!({"scene":{"boids":{"neighbours":v.round() as usize}}}),
                     ));
                     rows.push(slider(
@@ -429,6 +455,7 @@ impl cosmic::Application for Applet {
                         b.separation,
                         0.,
                         1.,
+                        0.05,
                         |v| json!({"scene":{"boids":{"separation":v}}}),
                     ));
                     rows.push(slider(
@@ -436,6 +463,7 @@ impl cosmic::Application for Applet {
                         b.alignment,
                         0.,
                         10.,
+                        0.1,
                         |v| json!({"scene":{"boids":{"alignment":v}}}),
                     ));
                     rows.push(slider(
@@ -443,6 +471,7 @@ impl cosmic::Application for Applet {
                         b.cohesion,
                         0.,
                         10.,
+                        0.1,
                         |v| json!({"scene":{"boids":{"cohesion":v}}}),
                     ));
                 }

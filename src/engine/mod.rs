@@ -13,6 +13,7 @@ pub(crate) mod render_tests;
 pub mod shadows;
 pub mod stats;
 pub mod textures;
+pub mod timing;
 pub mod vertices;
 
 use std::sync::Arc;
@@ -225,6 +226,20 @@ impl Engine {
         SceneCtx {
             device: &self.device,
             camera_layout: &self.camera_layout,
+        }
+    }
+
+    pub fn set_vsync(&mut self, enabled: bool) {
+        let mode = if enabled {
+            wgpu::PresentMode::Fifo
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        if self.surface_config.present_mode != mode {
+            self.surface_config.present_mode = mode;
+            if let Some(surface) = &self.surface {
+                surface.configure(&self.device, &self.surface_config);
+            }
         }
     }
 

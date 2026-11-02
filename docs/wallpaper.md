@@ -69,7 +69,7 @@ framing, including any intentional close-up. The service stays alive with
 no monitors and resumes presenting when an output returns.
 
 The applet's **Simulation speed** slider changes boid simulation time independently
-of the render FPS: 1× is real time, 0.25× is quarter speed, and 0× freezes the flock
+of the render FPS: 100% is real time, 50% is half speed, and 0% freezes the flock
 while appearance and camera controls still work. Trail lengths are measured in
 simulation seconds, so slowing time preserves their shape. Light rotation keeps
 its separate speed control. The same boid speed slider is available in the normal
@@ -81,8 +81,8 @@ cargo run -- ctl set '{"scene":{"boids":{"time_scale":1}}}'
 ```
 
 The renderer substeps boid motion to keep steering stable at lower FPS and higher
-simulation speeds. The 0–2× setting persists with the other boid settings; older
-settings files default to 1×.
+simulation speeds. The 0–200% setting persists with the other boid settings; older
+settings files default to 100%. The stored/API `time_scale` remains a multiplier.
 
 ## Build the COSMIC controls
 
@@ -106,6 +106,11 @@ volume, palette, and other wallpaper settings. Camera controls are available
 through the CLI rather than the applet. It shows the current
 outputs. Leave the output field blank for all monitors, or enter one output name
 to restrict the wallpaper. Stop and start the wallpaper to change that selection.
+
+Slider increments match between the applet and viewer: boid speed 10%, light
+rotation 5°/s, mesh spin 10°/s (viewer only), trails 0.1 s, shading strengths 0.05,
+view distance/separation 0.05, alignment/cohesion 0.1, and floor density 16.
+Counts use whole numbers. The viewer's numeric fields allow precise entry.
 
 Bayer size is selected in whole pixels (1–8 px) in both interfaces. The renderer
 snaps legacy `bayer_density` values to the nearest reciprocal integer cell size.
@@ -217,3 +222,8 @@ Only scene-specific settings and applet controls need further integration. This
 is reusable within this renderer, rather than a standalone wallpaper library:
 settings and control actions still belong to ReflecDith, and the platform host
 requires Wayland's layer-shell protocol.
+
+Wallpaper frame limiting follows fixed deadlines, skipping elapsed rendering
+slots after a delayed wake-up rather than shifting the entire schedule or
+rendering a catch-up burst. Boid updates reuse scratch buffers, and disabled
+trails skip tube construction. The applet offers 30 FPS and 60 FPS buttons.

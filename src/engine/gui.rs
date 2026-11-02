@@ -66,12 +66,33 @@ pub fn value_slider<N: egui::emath::Numeric>(
     decimals: usize,
     suffix: &str,
 ) {
+    value_slider_step(
+        ui,
+        label,
+        value,
+        range,
+        decimals,
+        suffix,
+        10_f64.powi(-(decimals as i32)),
+    );
+}
+
+pub fn value_slider_step<N: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut N,
+    range: RangeInclusive<N>,
+    decimals: usize,
+    suffix: &str,
+    step: f64,
+) {
     labeled_row(ui, label, |ui| {
         ui.spacing_mut().slider_width = ui.available_width() - VALUE_WIDTH - ui.spacing().item_spacing.x;
-        ui.add(egui::Slider::new(value, range.clone()).show_value(false));
+        ui.add(egui::Slider::new(value, range.clone()).step_by(step).show_value(false));
         ui.add_sized(
             [VALUE_WIDTH, ui.spacing().interact_size.y],
             egui::DragValue::new(value)
+                .speed(step)
                 .range(range)
                 .fixed_decimals(decimals)
                 .suffix(suffix),
@@ -173,6 +194,7 @@ impl Gui {
         scene_names: &[&str],
         scene: &mut dyn Scene,
         settings: &mut reflecdith_control::Settings,
+        fps_limit: &mut Option<u32>,
     ) -> FullOutput {
         let input = self.state.take_egui_input(window);
         let scene_settings = &mut settings.scene;
@@ -215,15 +237,20 @@ impl Gui {
                                 ui.selectable_value(selected_scene, index, *name);
                             }
                         });
+                        labeled_row(ui, "Frame rate", |ui| {
+                            ui.selectable_value(fps_limit, Some(30), "30");
+                            ui.selectable_value(fps_limit, Some(60), "60");
+                            ui.selectable_value(fps_limit, None, "Uncapped");
+                        });
                         // The active scene's own settings
                         scene.ui(ui, scene_settings);
                         ui.separator();
 
                         ui.heading("Lighting");
-                        value_slider(ui, "Shadows", &mut shading.shadow_strength, 0.0..=1.0, 2, "");
-                        value_slider(ui, "Rotation", &mut controls.light_speed, -180.0..=180.0, 0, "°/s");
+                        value_slider_step(ui, "Shadows", &mut shading.shadow_strength, 0.0..=1.0, 2, "", 0.05);
+                        value_slider_step(ui, "Rotation", &mut controls.light_speed, -180.0..=180.0, 0, "°/s", 5.);
                         value_slider(ui, "Shininess", &mut shading.shininess, 1.0..=64.0, 0, "");
-                        value_slider(ui, "Specular", &mut shading.specular_strength, 0.0..=3.0, 2, "");
+                        value_slider_step(ui, "Specular", &mut shading.specular_strength, 0.0..=3.0, 2, "", 0.05);
                         if ui.button("Reset lighting").clicked() {
                             controls.reset_light();
                             let defaults = camera::Shading::default();
@@ -238,7 +265,7 @@ impl Gui {
                             // Lit floor peaks at about 0.68 x brightness at the
                             // centre, so the range runs
                             // past 1.0 to reach the light tone there
-                            value_slider(ui, "Brightness", &mut shading.floor_brightness, 0.0..=2.0, 2, "");
+                            value_slider_step(ui, "Brightness", &mut shading.floor_brightness, 0.0..=2.0, 2, "", 0.05);
                             value_slider(ui, "Fade start", &mut shading.floor_fade_start, 0.0..=6.0, 1, "");
                             value_slider(
                                 ui,
@@ -267,13 +294,14 @@ impl Gui {
                             *bayer_density = 1. / cell_size as f32;
                         }
                         if has_floor {
-                            value_slider(
+                            value_slider_step(
                                 ui,
                                 "Floor density",
                                 &mut shading.floor_noise_density,
                                 16.0..=256.0,
                                 0,
                                 "",
+                                16.,
                             );
                         }
                         if ui.button("Reset dithering").clicked() {

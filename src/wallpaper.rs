@@ -4,7 +4,7 @@ mod present;
 
 use crate::{
     cli::Cli,
-    engine::{Engine, camera::Orbit},
+    engine::{Engine, camera::Orbit, timing},
     scenes::Scenes,
 };
 use layout::{Desktop, Rect};
@@ -439,7 +439,11 @@ impl Wallpaper {
                 now.duration_since(self.last_frame).as_secs_f32().min(0.1)
             };
             self.last_frame = now;
-            self.next_frame = now + Duration::from_secs_f64(1. / self.settings.fps as f64);
+            self.next_frame = timing::next_deadline(
+                self.next_frame,
+                now,
+                Duration::from_secs_f64(1. / self.settings.fps as f64),
+            );
             if self.scenes.active_id() != self.settings.selected_scene {
                 self.scenes.activate(self.settings.selected_scene, &engine.scene_ctx());
             }

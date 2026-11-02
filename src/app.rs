@@ -17,12 +17,9 @@ use winit::{
 
 use crate::{
     cli::Cli,
-    engine::{Engine, benchmark, capture::CAPTURE_SCALE, stats},
+    engine::{Engine, benchmark, capture::CAPTURE_SCALE, stats, timing},
     scenes::Scenes,
 };
-
-// Normal viewing is capped; benchmarks measure uncapped rendering work.
-const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
 
 // Top-level struct holding the state of the main application
 pub struct App {
@@ -38,6 +35,7 @@ pub struct App {
     fps_last_update: Instant,
     usage_stats: stats::UsageStats,
     next_frame_time: Instant,
+    fps_limit: Option<u32>,
     // Whether the left button is held down, having been pressed outside the
     // menu, and where the cursor was last seen
     dragging: bool,
@@ -60,6 +58,7 @@ impl App {
             fps_last_update: Instant::now(),
             usage_stats: stats::UsageStats::new(),
             next_frame_time: Instant::now(),
+            fps_limit: Some(60),
             dragging: false,
             last_cursor: None,
             benchmark: options.benchmark_frames.map(|n| benchmark::Benchmark::new(n as usize)),
@@ -112,6 +111,9 @@ impl ApplicationHandler for App {
         self.window = Some(Arc::clone(&window));
 
         let mut engine = Engine::new(window, self.options.benchmark_frames.is_some());
+        if self.benchmark.is_none() {
+            engine.set_vsync(true);
+        }
         // A live or loaded robot holds the light still
         if self.options.robot.ros || self.options.robot.urdf.is_some() {
             engine.settings.controls.light_speed = 0.;
@@ -216,12 +218,11 @@ impl ApplicationHandler for App {
             // Main render task
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
-                if self.benchmark.is_none() {
+                if self.benchmark.is_none() && self.fps_limit.is_some() {
                     if now < self.next_frame_time {
                         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_time));
                         return;
                     }
-                    self.next_frame_time = now + FRAME_INTERVAL;
                 }
                 let Some(engine) = &mut self.engine else {
                     return;
@@ -233,7 +234,29 @@ impl ApplicationHandler for App {
                 // change is applied in time for this frame
                 let scene_names = self.scenes.names();
                 let gui = self.gui.as_mut().unwrap();
-                let gui_output = gui.run(window, &scene_names, self.scenes.active_mut(), &mut engine.settings);
+                let old_limit = self.fps_limit;
+                let gui_output = gui.run(
+                    window,
+                    &scene_names,
+                    self.scenes.active_mut(),
+                    &mut engine.settings,
+                    &mut self.fps_limit,
+                );
+                if self.benchmark.is_none() {
+                    if old_limit != self.fps_limit {
+                        engine.set_vsync(self.fps_limit.is_some());
+                    }
+                    if let Some(fps) = self.fps_limit {
+                        let interval = Duration::from_secs_f64(1. / fps as f64);
+                        self.next_frame_time = if old_limit != self.fps_limit {
+                            now + interval
+                        } else {
+                            timing::next_deadline(self.next_frame_time, now, interval)
+                        };
+                    } else {
+                        event_loop.set_control_flow(ControlFlow::Poll);
+                    }
+                }
                 if engine.settings.selected_scene != self.scenes.active_id() {
                     self.scenes
                         .activate(engine.settings.selected_scene, &engine.scene_ctx());
@@ -405,7 +428,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(window) = &self.window {
-            if self.benchmark.is_some() || Instant::now() >= self.next_frame_time {
+            if self.benchmark.is_some() || self.fps_limit.is_none() || Instant::now() >= self.next_frame_time {
                 window.request_redraw();
             } else {
                 // Wait without blocking input or spinning between frames.
