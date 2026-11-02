@@ -136,7 +136,6 @@ if [[ "$mode" == run ]]; then
     args+=(--env XDG_RUNTIME_DIR=/tmp/viewer-runtime --env WAYLAND_DISPLAY=wayland-viewer
       --volume "$runtime_dir/$WAYLAND_DISPLAY:/tmp/viewer-runtime/wayland-viewer:ro")
   fi
-
 fi
 # Capture AMENT_PREFIX_PATH before sourcing: selected robot overlays contain mesh packages.
 exec docker run "${args[@]}" --entrypoint /bin/bash "$image" -c '

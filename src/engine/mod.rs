@@ -118,8 +118,8 @@ impl Engine {
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
-            width: width,
-            height: height,
+            width,
+            height,
             present_mode: if benchmark && surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
                 wgpu::PresentMode::Immediate
             } else {

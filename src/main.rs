@@ -16,12 +16,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = cli::Cli::parse();
     if let Some(cli::Command::Ctl { command }) = &cli.command {
         use reflecdith_control::ipc;
-        if matches!(command, cli::Control::Stop) {
-            ipc::stop()?;
-            return Ok(());
-        }
         let state = match command {
-            cli::Control::Stop => unreachable!(),
+            cli::Control::Stop => {
+                ipc::stop()?;
+                return Ok(());
+            }
             cli::Control::Get => ipc::get_state()?,
             cli::Control::Set { json } => ipc::apply_patch(json)?,
             cli::Control::ResetBoids => ipc::reset_boids()?,
@@ -126,7 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Every scene the View row offers, in order. Each is built the first time
     // it is shown
     let mut scenes = Scenes::new();
-    let mesh = scenes.register("Mesh", |ctx| MeshScene::new(ctx));
+    let mesh = scenes.register("Mesh", MeshScene::new);
     scenes.register("Boids", |ctx| Boids::new(ctx.device, 64));
     let startup = robot::Startup {
         options: options.clone(),

@@ -100,8 +100,10 @@ pub trait Scene {
         self.draw(pass);
     }
 
-    // The scene's own section of the side menu, under the View row
+    // Apply shared settings before updating the scene.
     fn apply_settings(&mut self, _settings: &reflecdith_control::settings::SceneSettings) {}
+
+    // The scene's section of the viewer menu.
     fn ui(&mut self, _ui: &mut egui::Ui, _settings: &mut reflecdith_control::settings::SceneSettings) {}
 }
 

@@ -4,8 +4,7 @@ use std::{
     hash::{BuildHasher, Hasher},
 };
 
-// The tones the dither chooses between, in linear RGB. Edited from the
-// side menu in gui.rs
+// Dither endpoints in linear RGB.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Palette {
@@ -13,8 +12,7 @@ pub struct Palette {
     pub light: [f32; 3],
 }
 
-// How many tones the dither quantises to, evenly spaced from the dark colour
-// to the light colour. 2 is just the two colours
+// Tone count, evenly spaced between the palette endpoints.
 pub const DEFAULT_LEVELS: u32 = 3;
 pub const MAX_LEVELS: u32 = 16;
 pub const DEFAULT_BAYER_DENSITY: f32 = 0.5;
@@ -81,7 +79,7 @@ fn muted_hsl(hue: f32, saturation: f32, lightness: f32) -> [f32; 3] {
     })
 }
 
-// How the surfaces are shaded, edited from the side menu
+// Surface shading controls.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Shading {
@@ -114,8 +112,7 @@ impl Default for Shading {
     }
 }
 
-// The rotation of the light about the world Y axis. The angle advances at its
-// speed every frame
+// Light rotation about the world Y axis.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LightControls {

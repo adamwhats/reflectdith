@@ -218,11 +218,9 @@ impl ApplicationHandler for App {
             // Main render task
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
-                if self.benchmark.is_none() && self.fps_limit.is_some() {
-                    if now < self.next_frame_time {
-                        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_time));
-                        return;
-                    }
+                if self.benchmark.is_none() && self.fps_limit.is_some() && now < self.next_frame_time {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_time));
+                    return;
                 }
                 let Some(engine) = &mut self.engine else {
                     return;
