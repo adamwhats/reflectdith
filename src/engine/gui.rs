@@ -1,9 +1,7 @@
-use crate::{camera, post, post::Palette};
+use super::{camera, post, post::Palette};
+use crate::scenes::Scene;
 
-use std::{
-    ops::RangeInclusive,
-    path::{Path, PathBuf},
-};
+use std::ops::RangeInclusive;
 
 use egui::{Context, FontDefinitions, FontFamily, FullOutput, TextureId, ViewportId};
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
@@ -21,45 +19,34 @@ const VALUE_WIDTH: f32 = 70.0;
 // controls of all sections line up. Fits the longest label, "Bayer density"
 const LABEL_WIDTH: f32 = 110.0;
 
-// The rotation of the model and the light about the world Y axis. Each angle
-// advances at its speed every frame; only light speed is exposed in the menu
-pub struct SceneControls {
-    // Angles in degrees
-    pub model_angle: f32,
+// The rotation of the light about the world Y axis. The angle advances at its
+// speed every frame
+pub struct LightControls {
+    // Angle in degrees
     pub light_angle: f32,
-    // Speeds in degrees per second
-    pub model_speed: f32,
+    // Speed in degrees per second
     pub light_speed: f32,
 }
 
-impl Default for SceneControls {
+impl Default for LightControls {
     fn default() -> Self {
         Self {
-            model_angle: 0.0,
             light_angle: 0.0,
-            model_speed: camera::ROT_VEL.to_degrees(),
             light_speed: camera::LIGHT_ROT_VEL.to_degrees(),
         }
     }
 }
 
-impl SceneControls {
+impl LightControls {
     pub fn reset_light(&mut self) {
         self.light_angle = 0.;
         self.light_speed = 0.;
     }
 
-    // Move both angles on by dt seconds, wrapped to 0 to 360
+    // Move the angle on by dt seconds, wrapped to 0 to 360
     pub fn advance(&mut self, dt: f32) {
-        self.model_angle = (self.model_angle + self.model_speed * dt).rem_euclid(360.0);
         self.light_angle = (self.light_angle + self.light_speed * dt).rem_euclid(360.0);
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ViewMode {
-    Mesh,
-    Robot,
 }
 
 // The side menu, drawn with egui on top of the dithered image
@@ -79,14 +66,13 @@ pub struct Gui {
     pub levels: u32,
     pub bayer_density: f32,
     pub shared_grid: bool,
-    // Animation state; the menu exposes light speed
-    pub controls: SceneControls,
+    // Light animation state; the menu exposes its speed
+    pub controls: LightControls,
     // The specular and floor settings being edited
     pub shading: camera::Shading,
-    // The models which can be picked from the dropdown, and the index of the
-    // one picked. The caller loads the model when the index changes
-    models: Vec<PathBuf>,
-    pub selected_model: usize,
+    // Index of the scene picked in the View row. The caller switches scenes
+    // when it differs from the active one
+    pub selected_scene: usize,
     // Width in physical pixels of the strip on the left of the window which
     // the menu covers, as of the last run
     pub menu_width_px: f32,
@@ -95,10 +81,7 @@ pub struct Gui {
     pub capture_requested: bool,
     // The result of the last capture, shown under the button
     pub status: String,
-    pub robot_status: Option<String>,
-    pub mode: ViewMode,
     pub visible: bool,
-    pub topics: Option<crate::topics::TopicPanel>,
     // FPS and resource usage, drawn in the top-left corner of the view
     pub stats_text: String,
 }
@@ -119,7 +102,7 @@ pub fn labeled_row<R>(ui: &mut egui::Ui, label: &str, add_contents: impl FnOnce(
 // A labelled slider followed by a number box of a fixed width, the slider
 // stretched so the box sits at the right edge. The two edit the same value,
 // shown with the given number of decimal places
-fn value_slider<N: egui::emath::Numeric>(
+pub fn value_slider<N: egui::emath::Numeric>(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut N,
@@ -163,7 +146,8 @@ pub fn combo_row(
 }
 
 // The stats text in the top-left corner of the view, right of the menu, in
-// the palette's light colour. It ignores the pointer so it never blocks orbiting
+// the palette's light colour. It ignores the pointer so it never blocks
+// orbiting
 fn stats_overlay(ui: &egui::Ui, text: &str, palette: &Palette, left: f32) {
     if text.is_empty() {
         return;
@@ -180,19 +164,8 @@ fn stats_overlay(ui: &egui::Ui, text: &str, palette: &Palette, left: f32) {
         });
 }
 
-// The name shown in the dropdown for a model file
-fn model_name(path: &Path) -> String {
-    path.file_stem().unwrap_or_default().to_string_lossy().into_owned()
-}
-
 impl Gui {
-    pub fn new(
-        device: &Device,
-        window: &Window,
-        surface_format: TextureFormat,
-        models: Vec<PathBuf>,
-        selected_model: usize,
-    ) -> Self {
+    pub fn new(device: &Device, window: &Window, surface_format: TextureFormat) -> Self {
         let context = Context::default();
 
         // Use egui's bundled monospace font (Hack) for all text by putting it
@@ -224,24 +197,15 @@ impl Gui {
             levels: post::DEFAULT_LEVELS,
             bayer_density: post::DEFAULT_BAYER_DENSITY,
             shared_grid: true,
-            controls: SceneControls::default(),
+            controls: LightControls::default(),
             shading: camera::Shading::default(),
-            models,
-            selected_model,
+            selected_scene: 0,
             menu_width_px: 0.0,
             capture_requested: false,
             status: String::new(),
-            robot_status: None,
-            mode: ViewMode::Mesh,
             visible: true,
             stats_text: String::new(),
-            topics: None,
         }
-    }
-
-    // The file of the model picked in the dropdown
-    pub fn selected_model_path(&self) -> &Path {
-        &self.models[self.selected_model]
     }
 
     // Pass a window event on to egui. Returns whether egui used the event, for
@@ -251,9 +215,10 @@ impl Gui {
         self.visible && response.consumed
     }
 
-    // Lay out the menu for this frame, which may edit the palette. Returns
-    // what egui wants drawn, to be passed to draw
-    pub fn run(&mut self, window: &Window) -> FullOutput {
+    // Lay out the menu for this frame, which may edit the palette and the
+    // active scene's settings. scene_names lists every scene, for the View
+    // row. Returns what egui wants drawn, to be passed to draw
+    pub fn run(&mut self, window: &Window, scene_names: &[&str], scene: &mut dyn Scene) -> FullOutput {
         let input = self.state.take_egui_input(window);
         let palette = &mut self.palette;
         let levels = &mut self.levels;
@@ -261,14 +226,11 @@ impl Gui {
         let shared_grid = &mut self.shared_grid;
         let controls = &mut self.controls;
         let shading = &mut self.shading;
-        let models = &self.models;
-        let selected_model = &mut self.selected_model;
+        let selected_scene = &mut self.selected_scene;
+        let has_floor = scene.has_floor();
         let capture_requested = &mut self.capture_requested;
         let status = &self.status;
-        let robot_status = &self.robot_status;
         let visible = &mut self.visible;
-        let topics = &mut self.topics;
-        let mode = &mut self.mode;
         let stats_text = &self.stats_text;
         let mut menu_width_points = 0.0;
         let mut output = self.context.run_ui(input, |ui| {
@@ -280,10 +242,11 @@ impl Gui {
                 .resizable(false)
                 .exact_size(PANEL_WIDTH)
                 .show(ui, |ui| {
-                    // The window can be small, so let the menu scroll rather than
-                    // be cut off
-                    // A solid scroll bar takes its own space, rather than floating
-                    // over the number boxes at the right edge
+                    // The window can be small, so let the menu scroll rather
+                    // than be cut off
+                    // A solid scroll bar takes its own space, rather than
+                    // floating over the number boxes at the
+                    // right edge
                     ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         if ui.button("Hide controls").clicked() {
@@ -292,28 +255,12 @@ impl Gui {
                         ui.separator();
                         ui.heading("Scene");
                         labeled_row(ui, "View", |ui| {
-                            ui.selectable_value(mode, ViewMode::Mesh, "Mesh");
-                            ui.selectable_value(mode, ViewMode::Robot, "Robot");
+                            for (index, name) in scene_names.iter().enumerate() {
+                                ui.selectable_value(selected_scene, index, *name);
+                            }
                         });
-                        if *mode == ViewMode::Robot {
-                            if let Some(topics) = topics {
-                                topics.ui(ui);
-                            }
-                            if let Some(status) = robot_status {
-                                ui.add(
-                                    egui::Label::new(status.replace('\n', " · "))
-                                        .truncate()
-                                        .show_tooltip_when_elided(false),
-                                );
-                            }
-                        } else {
-                            let selected_text = model_name(&models[*selected_model]);
-                            combo_row(ui, "Mesh", "model_select", selected_text, |ui| {
-                                for (index, model) in models.iter().enumerate() {
-                                    ui.selectable_value(selected_model, index, model_name(model));
-                                }
-                            });
-                        }
+                        // The active scene's own settings
+                        scene.ui(ui);
                         ui.separator();
 
                         ui.heading("Lighting");
@@ -330,39 +277,44 @@ impl Gui {
                         }
                         ui.separator();
 
-                        ui.heading("Floor");
-                        // Lit floor peaks at about 0.68 x brightness at the centre, so the
-                        // range runs past 1.0 to reach the light tone there
-                        value_slider(ui, "Brightness", &mut shading.floor_brightness, 0.0..=2.0, 2, "");
-                        value_slider(ui, "Fade start", &mut shading.floor_fade_start, 0.0..=6.0, 1, "");
-                        value_slider(
-                            ui,
-                            "Fade end",
-                            &mut shading.floor_fade_end,
-                            0.0..=crate::vertices::FLOOR_HALF_EXTENT,
-                            1,
-                            "",
-                        );
-                        if ui.button("Reset floor").clicked() {
-                            let defaults = camera::Shading::default();
-                            shading.floor_brightness = defaults.floor_brightness;
-                            shading.floor_fade_start = defaults.floor_fade_start;
-                            shading.floor_fade_end = defaults.floor_fade_end;
+                        if has_floor {
+                            ui.heading("Floor");
+                            // Lit floor peaks at about 0.68 x brightness at the
+                            // centre, so the range runs
+                            // past 1.0 to reach the light tone there
+                            value_slider(ui, "Brightness", &mut shading.floor_brightness, 0.0..=2.0, 2, "");
+                            value_slider(ui, "Fade start", &mut shading.floor_fade_start, 0.0..=6.0, 1, "");
+                            value_slider(
+                                ui,
+                                "Fade end",
+                                &mut shading.floor_fade_end,
+                                0.0..=super::vertices::FLOOR_HALF_EXTENT,
+                                1,
+                                "",
+                            );
+                            if ui.button("Reset floor").clicked() {
+                                let defaults = camera::Shading::default();
+                                shading.floor_brightness = defaults.floor_brightness;
+                                shading.floor_fade_start = defaults.floor_fade_start;
+                                shading.floor_fade_end = defaults.floor_fade_end;
+                            }
+                            ui.separator();
                         }
-                        ui.separator();
 
                         ui.heading("Dithering");
                         checkbox_row(ui, "Shared grid", shared_grid);
                         value_slider(ui, "Levels", levels, 2..=post::MAX_LEVELS, 0, "");
                         value_slider(ui, "Bayer density", bayer_density, 0.125..=1.0, 2, "×");
-                        value_slider(
-                            ui,
-                            "Floor density",
-                            &mut shading.floor_noise_density,
-                            16.0..=256.0,
-                            0,
-                            "",
-                        );
+                        if has_floor {
+                            value_slider(
+                                ui,
+                                "Floor density",
+                                &mut shading.floor_noise_density,
+                                16.0..=256.0,
+                                0,
+                                "",
+                            );
+                        }
                         if ui.button("Reset dithering").clicked() {
                             *levels = post::DEFAULT_LEVELS;
                             *bayer_density = post::DEFAULT_BAYER_DENSITY;

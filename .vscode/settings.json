@@ -10,5 +10,8 @@
     "2024",
     "--config-path",
     "${workspaceFolder}/rustfmt.toml"
+  ],
+  "cSpell.words": [
+    "boids"
   ]
 }

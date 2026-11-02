@@ -1,4 +1,4 @@
-use crate::vertices;
+use super::vertices;
 
 use wgpu::{
     BindGroupLayout, DepthStencilState, Device, FragmentState, PipelineCompilationOptions, PipelineLayout,

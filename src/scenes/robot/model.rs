@@ -1,5 +1,5 @@
 //! URDF visuals and forward kinematics, kept independent of ROS transport.
-use crate::{
+use crate::engine::{
     camera,
     vertices::{self, Vertex},
 };
@@ -15,8 +15,8 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+// The robot scene's command line options, flattened into the viewer's
 #[derive(Parser, Clone, Debug)]
-#[command(about = "Dithered mesh / ROS 2 robot viewer")]
 pub struct Options {
     /// Load an expanded URDF (run xacro separately).
     #[arg(long)]
@@ -50,18 +50,6 @@ pub struct Options {
     /// Listen for joint states without opening a window; exit after this many seconds.
     #[arg(long)]
     pub probe_ros: Option<u64>,
-    /// Start with the controls hidden; press Tab to show them.
-    #[arg(long)]
-    pub hide_gui: bool,
-    /// Start with shadow strength at zero (also adjustable in the GUI).
-    #[arg(long)]
-    pub no_shadows: bool,
-    /// Save a screenshot and exit after this many seconds (requires a display).
-    #[arg(long)]
-    pub capture_after: Option<u64>,
-    /// Measure N frames after 120 warmup frames, waiting for the GPU each frame, then exit.
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
-    pub benchmark_frames: Option<u32>,
     /// Check URDF and mesh loading without opening a window.
     #[arg(long)]
     pub check_robot: bool,
@@ -69,9 +57,9 @@ pub struct Options {
 
 #[derive(Default)]
 pub struct LiveState {
-    pub topics: crate::topics::TopicCatalog,
-    pub requested: Option<crate::topics::TopicSelection>,
-    pub active: Option<crate::topics::TopicSelection>,
+    pub topics: crate::scenes::robot::topics::TopicCatalog,
+    pub requested: Option<crate::scenes::robot::topics::TopicSelection>,
+    pub active: Option<crate::scenes::robot::topics::TopicSelection>,
     pub generation: u64,
     pub robot_root: Option<String>,
     pub description: Option<String>,
@@ -512,7 +500,7 @@ struct RobotFrame {
     uniforms: Vec<u8>,
 }
 
-pub struct RobotScene {
+pub struct RobotGeometry {
     pub robot: Robot,
     draws: Vec<RobotDraw>,
     pub floor_y: f32,
@@ -522,7 +510,7 @@ pub struct RobotScene {
     frame: RefCell<RobotFrame>,
     pub pose_revision: Cell<u64>,
 }
-impl RobotScene {
+impl RobotGeometry {
     pub fn new(robot: Robot, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Self {
         let floor_y = robot.rest_floor_y;
         // All visual uniforms share one allocation and one queue upload.
@@ -654,7 +642,7 @@ mod tests {
     #[test]
     fn arm_keeps_link_dimensions_and_moves_the_child_about_its_joint() {
         let options = options();
-        let robot = Robot::load(include_str!("../examples/arm.urdf"), Path::new("."), &options).unwrap();
+        let robot = Robot::load(include_str!("../../../examples/arm.urdf"), Path::new("."), &options).unwrap();
         let mut state = LiveState::default();
         let rest = robot.transforms(&state, None);
         state.positions.insert("shoulder".into(), std::f64::consts::FRAC_PI_2);
@@ -723,7 +711,7 @@ mod tests {
     fn footprint_follow_tracks_ground_motion_without_body_bob_or_tilt() {
         let mut options = options();
         options.fixed_frame = Some("odom".into());
-        let robot = Robot::load(include_str!("../examples/arm.urdf"), Path::new("."), &options).unwrap();
+        let robot = Robot::load(include_str!("../../../examples/arm.urdf"), Path::new("."), &options).unwrap();
         let tracking = ViewTracking::default();
         let mut state = LiveState::default();
         state.tf.insert(

@@ -1,7 +1,7 @@
 //! ROS graph choices shared by the worker and GUI; selection policy is transport-independent.
+use crate::scenes::robot::Options;
 #[cfg(any(feature = "ros2", test))]
-use crate::robot::LiveState;
-use crate::robot::Options;
+use crate::scenes::robot::model::LiveState;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TopicCatalog {
@@ -86,7 +86,7 @@ impl TopicSelection {
                     "map".into(),
                 ] {
                     if state.topics.frames.contains(&name)
-                        && crate::robot::tf_transform(&state.tf, &name, root).is_some()
+                        && crate::scenes::robot::tf_transform(&state.tf, &name, root).is_some()
                     {
                         return Some(name);
                     }
@@ -141,7 +141,7 @@ impl TopicPanel {
         } else {
             robot_name(&selected)
         };
-        crate::gui::combo_row(ui, "Robot", "ros_robot", label, |ui| {
+        crate::engine::gui::combo_row(ui, "Robot", "ros_robot", label, |ui| {
             if !selected.is_empty() && !self.catalog.descriptions.contains(&selected) {
                 let current = selected.clone();
                 ui.selectable_value(

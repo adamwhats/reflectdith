@@ -18,10 +18,21 @@ struct Camera {
     floor: vec4<f32>,
     model: mat4x4<f32>,
     view_proj: mat4x4<f32>,
+    // x and y are where fog starts and finishes, as distances past the orbit
+    // centre. Off unless y is above x
+    fog: vec4<f32>,
 };
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
+
+// How far a point is towards black in the fog, from 0 to 1. Measured from the
+// orbit centre rather than the eye, so zooming doesn't change it
+fn fog_amount(world: vec3<f32>) -> f32 {
+    if camera.fog.y <= camera.fog.x { return 0.0; }
+    let past_centre = length(camera.camera.xyz - world) - length(camera.camera.xyz);
+    return smoothstep(camera.fog.x, camera.fog.y, past_centre);
+}
 
 @group(1) @binding(0)
 var world_noise: texture_2d<f32>;
@@ -74,10 +85,14 @@ fn surface_visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
 // normal is flat-interpolated so every vertex of a triangle carries the
 // same value, giving the fragment shader a stable per-face identifier
 // world_position is needed for specular highlights in the fragment shader
+// brightness scales the lit colour. It is the length of the model-space
+// normal, capped at 1, so unit normals leave it at 1 and a shorter one dims
+// the face, as the boid trails do towards their tails
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) @interpolate(flat) normal: vec3<f32>,
     @location(1) world_position: vec3<f32>,
+    @location(2) @interpolate(flat) brightness: f32,
 };
 
 // Vertex shader entry point
@@ -94,6 +109,7 @@ fn vertex_main(
     let ul = mat3x3<f32>(camera.model[0].xyz, camera.model[1].xyz, camera.model[2].xyz);
     out.normal = ul * normal;
     out.world_position = world_position.xyz;
+    out.brightness = min(length(normal), 1.0);
     return out;
 }
 
@@ -114,8 +130,8 @@ fn fragment_main(
     // Specular lighting
     let specular_term = pow(max(dot(n, half), 0.0), camera.specular.x);
     let specular = light_colour * camera.specular.y * specular_term * visibility;
-    // Sum for final colour
-    let colour = diffuse + specular;
+    // Sum for final colour, faded towards the black background with distance
+    let colour = (diffuse + specular) * vertex_output.brightness * (1.0 - fog_amount(vertex_output.world_position));
     return vec4<f32>(colour, 1.0);
 }
 

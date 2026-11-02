@@ -23,6 +23,7 @@ pollster = "1.0.1"
 stl_io = "0.11.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
+rand = "0.10.3"
 
 # The launcher runs development builds. Optimize every dependency, including
 # wgpu, its Vulkan layer, glam and the ROS bindings, while retaining debug
