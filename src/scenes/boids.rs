@@ -2,7 +2,7 @@ use std::f32::consts::TAU;
 
 use super::{Scene, SceneCtx, SceneView};
 use crate::engine::{camera::CameraUniform, camera::Orbit, gui, vertices::Vertex};
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec2, Vec3};
 use rand::RngExt;
 use wgpu::{BufferDescriptor, Device};
 
@@ -261,6 +261,9 @@ impl Scene for Boids {
     fn view(&self) -> SceneView {
         SceneView {
             floor_origin: Vec3::new(0., -1., 0.),
+            // Clear in front of the centre, fading out across the back half
+            // of the box
+            fog: Vec2::new(-1.0, BOUNDARY_SIZE),
             ..Default::default()
         }
     }

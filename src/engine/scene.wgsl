@@ -18,10 +18,21 @@ struct Camera {
     floor: vec4<f32>,
     model: mat4x4<f32>,
     view_proj: mat4x4<f32>,
+    // x and y are where fog starts and finishes, as distances past the orbit
+    // centre. Off unless y is above x
+    fog: vec4<f32>,
 };
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
+
+// How far a point is towards black in the fog, from 0 to 1. Measured from the
+// orbit centre rather than the eye, so zooming doesn't change it
+fn fog_amount(world: vec3<f32>) -> f32 {
+    if camera.fog.y <= camera.fog.x { return 0.0; }
+    let past_centre = length(camera.camera.xyz - world) - length(camera.camera.xyz);
+    return smoothstep(camera.fog.x, camera.fog.y, past_centre);
+}
 
 @group(1) @binding(0)
 var world_noise: texture_2d<f32>;
@@ -114,8 +125,8 @@ fn fragment_main(
     // Specular lighting
     let specular_term = pow(max(dot(n, half), 0.0), camera.specular.x);
     let specular = light_colour * camera.specular.y * specular_term * visibility;
-    // Sum for final colour
-    let colour = diffuse + specular;
+    // Sum for final colour, faded towards the black background with distance
+    let colour = (diffuse + specular) * (1.0 - fog_amount(vertex_output.world_position));
     return vec4<f32>(colour, 1.0);
 }
 

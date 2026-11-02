@@ -5,7 +5,7 @@ pub mod boids;
 pub mod mesh;
 pub mod robot;
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 
 use crate::engine::camera::{CameraUniform, Orbit};
 
@@ -27,6 +27,9 @@ pub struct SceneView {
     // Where the floor is drawn, and what the light's shadow view is centred
     // above. With no floor it still places the shadow view
     pub floor_origin: Vec3,
+    // Distances past the orbit centre where fog starts and finishes fading
+    // surfaces to black. Zero turns it off
+    pub fog: Vec2,
 }
 
 impl Default for SceneView {
@@ -35,6 +38,7 @@ impl Default for SceneView {
             model: Mat4::IDENTITY,
             camera_motion: Mat4::IDENTITY,
             floor_origin: Vec3::ZERO,
+            fog: Vec2::ZERO,
         }
     }
 }

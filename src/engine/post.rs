@@ -25,7 +25,7 @@ pub struct Palette {
 // to the light colour. 2 is just the two colours
 pub const DEFAULT_LEVELS: u32 = 3;
 pub const MAX_LEVELS: u32 = 16;
-pub const DEFAULT_BAYER_DENSITY: f32 = 1.0;
+pub const DEFAULT_BAYER_DENSITY: f32 = 0.5;
 
 impl Default for Palette {
     fn default() -> Self {

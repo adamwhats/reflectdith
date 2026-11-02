@@ -248,7 +248,7 @@ impl Engine {
     pub fn prepare_frame(&self, scene: &mut dyn Scene, orbit: &camera::Orbit, aspect: f32, offset: f32) {
         let view = scene.view();
         let orbit = self.constrain_orbit(orbit, scene);
-        let camera_uniform = camera::camera_uniform(
+        let mut camera_uniform = camera::camera_uniform(
             &orbit,
             view.model,
             self.gui.controls.light_angle,
@@ -257,6 +257,7 @@ impl Engine {
             offset,
         )
         .follow(view.camera_motion);
+        camera_uniform.fog = view.fog.extend(0.0).extend(0.0);
         self.queue
             .write_buffer(&self.camera_transform.buffer, 0, bytemuck::bytes_of(&camera_uniform));
         scene.prepare(&self.queue, &camera_uniform);

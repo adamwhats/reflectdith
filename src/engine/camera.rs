@@ -63,6 +63,10 @@ pub struct CameraUniform {
     pub model: Mat4,
     // World-to-clip transform (view followed by projection)
     pub view_proj: Mat4,
+    // x and y are where fog starts and finishes, as distances past the orbit
+    // centre, so they hold as the camera zooms. Off unless y is above x. Last,
+    // so shaders which don't fog can leave it out of their struct
+    pub fog: Vec4,
 }
 
 // How the surfaces are shaded, edited from the side menu
@@ -261,6 +265,7 @@ pub fn camera_uniform(
         ),
         model,
         view_proj: shift * projection * view,
+        fog: Vec4::ZERO,
     }
 }
 
