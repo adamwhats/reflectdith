@@ -28,6 +28,7 @@ const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
 pub struct App {
     window: Option<Arc<Window>>,
     engine: Option<Engine>,
+    gui: Option<crate::engine::gui::Gui>,
     // Every scene, each with its own camera, and the one shown at startup
     scenes: Scenes,
     initial_scene: usize,
@@ -51,6 +52,7 @@ impl App {
         Self {
             window: None,
             engine: None,
+            gui: None,
             scenes,
             initial_scene,
             last_frame_time: Instant::now(),
@@ -71,6 +73,7 @@ impl ApplicationHandler for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // egui's clipboard worker borrows the Wayland display. Stop it before
         // run_app consumes the event loop and destroys that display connection.
+        self.gui.take();
         self.engine.take();
         self.window.take();
     }
@@ -111,15 +114,21 @@ impl ApplicationHandler for App {
         let mut engine = Engine::new(window, self.options.benchmark_frames.is_some());
         // A live or loaded robot holds the light still
         if self.options.robot.ros || self.options.robot.urdf.is_some() {
-            engine.gui.controls.light_speed = 0.;
+            engine.settings.controls.light_speed = 0.;
         }
-        engine.gui.visible = !self.options.hide_gui;
+        let mut gui = crate::engine::gui::Gui::new(
+            &engine.device,
+            self.window.as_ref().unwrap(),
+            engine.surface_config.format,
+        );
+        gui.visible = !self.options.hide_gui;
+        self.gui = Some(gui);
         if self.options.no_shadows {
-            engine.gui.shading.shadow_strength = 0.0;
+            engine.settings.shading.shadow_strength = 0.0;
         }
 
         // Build and show the startup scene
-        engine.gui.selected_scene = self.initial_scene;
+        engine.settings.selected_scene = self.initial_scene;
         self.scenes.activate(self.initial_scene, &engine.scene_ctx());
         self.engine = Some(engine);
     }
@@ -131,8 +140,8 @@ impl ApplicationHandler for App {
             && event.state == ElementState::Pressed
             && !event.repeat
         {
-            if let Some(engine) = &mut self.engine {
-                engine.gui.visible = !engine.gui.visible;
+            if let Some(gui) = &mut self.gui {
+                gui.visible = !gui.visible;
             }
             self.dragging = false;
             self.last_cursor = None;
@@ -145,8 +154,8 @@ impl ApplicationHandler for App {
         // input. If it used the event, such as a click on a slider, the camera
         // shouldn't also react to it
         let mut consumed_by_gui = false;
-        if let (Some(window), Some(engine)) = (&self.window, &mut self.engine) {
-            consumed_by_gui = engine.gui.on_window_event(window, &event);
+        if let (Some(window), Some(gui)) = (&self.window, &mut self.gui) {
+            consumed_by_gui = gui.on_window_event(window, &event);
         }
 
         // Any window event will initiate this match statement, allowing us to
@@ -223,9 +232,11 @@ impl ApplicationHandler for App {
                 // Lay out the side menu first, so any palette or scene setting
                 // change is applied in time for this frame
                 let scene_names = self.scenes.names();
-                let gui_output = engine.gui.run(window, &scene_names, self.scenes.active_mut());
-                if engine.gui.selected_scene != self.scenes.active_id() {
-                    self.scenes.activate(engine.gui.selected_scene, &engine.scene_ctx());
+                let gui = self.gui.as_mut().unwrap();
+                let gui_output = gui.run(window, &scene_names, self.scenes.active_mut(), &mut engine.settings);
+                if engine.settings.selected_scene != self.scenes.active_id() {
+                    self.scenes
+                        .activate(engine.settings.selected_scene, &engine.scene_ctx());
                     self.dragging = false;
                 }
 
@@ -235,9 +246,10 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 let dt = now.duration_since(self.last_frame_time).as_secs_f32();
                 self.last_frame_time = now;
-                engine.gui.controls.advance(dt);
+                engine.settings.controls.advance(dt);
                 let scene_id = self.scenes.active_id();
                 let (scene, orbit) = self.scenes.active_with_orbit();
+                scene.apply_settings(&engine.settings.scene);
                 scene.update(&engine.scene_ctx(), dt);
 
                 let auto_capture = self
@@ -245,14 +257,14 @@ impl ApplicationHandler for App {
                     .capture_after
                     .is_some_and(|s| self.started_at.elapsed() >= Duration::from_secs(s));
                 if auto_capture {
-                    engine.gui.capture_requested = true;
+                    gui.capture_requested = true;
                 }
                 // Take a screenshot if the button was clicked. It submits its
                 // own commands, so it has to come before this frame's uniform
                 // writes below, which would otherwise be picked up by the
                 // screenshot's submit
-                if std::mem::take(&mut engine.gui.capture_requested) {
-                    engine.gui.status = match engine.save_screenshot(scene, scene_id, orbit) {
+                if std::mem::take(&mut gui.capture_requested) {
+                    gui.status = match engine.save_screenshot(scene, scene_id, orbit) {
                         Ok((path, width, height)) => {
                             let message = format!("Saved {} ({width}x{height})", path.display());
                             eprintln!("{message}");
@@ -270,20 +282,20 @@ impl ApplicationHandler for App {
                 // cover
                 engine.post.write_uniform(
                     &engine.queue,
-                    &engine.gui.palette,
+                    &engine.settings.palette,
                     1,
-                    engine.gui.levels,
-                    engine.gui.bayer_density,
-                    engine.gui.shared_grid,
+                    engine.settings.levels,
+                    engine.settings.bayer_density,
+                    engine.settings.shared_grid,
                 );
                 let width = engine.surface_config.width as f32;
                 let aspect_ratio = width / engine.surface_config.height as f32;
-                let ndc_offset_x = engine.gui.menu_width_px / width;
+                let ndc_offset_x = gui.menu_width_px / width;
                 engine.prepare_frame(scene, orbit, aspect_ratio, ndc_offset_x);
 
                 let prepare_time = benchmark::elapsed(benchmark_start);
                 // Acquire the next frame for rendering
-                let frame = engine.surface.get_current_texture();
+                let frame = engine.surface.as_ref().unwrap().get_current_texture();
 
                 // Return the surface texture if frame acquisition is successful
                 let surface_texture = match frame {
@@ -331,7 +343,7 @@ impl ApplicationHandler for App {
                 }
 
                 // Menu pass: draw the side menu over the dithered image
-                engine.gui.draw(
+                gui.draw(
                     &engine.device,
                     &engine.queue,
                     &mut encoder,
@@ -381,7 +393,7 @@ impl ApplicationHandler for App {
                 let since_last_update = self.fps_last_update.elapsed();
                 if since_last_update >= Duration::from_secs(1) {
                     let fps = self.fps_frame_count as f32 / since_last_update.as_secs_f32();
-                    engine.gui.stats_text = self.usage_stats.sample(fps, &engine.device, engine.gpu_timer.as_mut());
+                    gui.stats_text = self.usage_stats.sample(fps, &engine.device, engine.gpu_timer.as_mut());
                     self.fps_frame_count = 0;
                     self.fps_last_update = Instant::now();
                 }

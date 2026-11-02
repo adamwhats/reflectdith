@@ -9,7 +9,7 @@ pub mod gui;
 pub mod pipeline;
 pub mod post;
 #[cfg(test)]
-mod render_tests;
+pub(crate) mod render_tests;
 pub mod shadows;
 pub mod stats;
 pub mod textures;
@@ -17,6 +17,7 @@ pub mod vertices;
 
 use std::sync::Arc;
 
+use reflecdith_control::Settings;
 use wgpu::{
     Device, Instance, Queue, RenderPipeline, ShaderModuleDescriptor, ShaderSource, StoreOp, Surface, SurfaceColorSpace,
     SurfaceConfiguration, TextureView,
@@ -37,8 +38,10 @@ pub struct Engine {
     pub device: Device,
     // Queue is where we submit commands to be sent to the device for execution
     pub queue: Queue,
-    // Surface is the drawable target on screen that we render to
-    pub surface: Surface<'static>,
+    // The viewer owns its window surface here; wallpaper mode moves surfaces
+    // into its per-monitor hosts and uses this engine for the shared canvas.
+    pub surface: Option<Surface<'static>>,
+    pub adapter: wgpu::Adapter,
     // Surface configuration defines how the surface is configured for rendering
     pub surface_config: SurfaceConfiguration,
     // The floor under the scene, a flat square, and the pipeline which draws it
@@ -60,8 +63,7 @@ pub struct Engine {
     // The pipeline and bind group for the pass which draws the scene texture
     // to the surface
     pub post: post::PostProcess,
-    // The side menu for editing the palette
-    pub gui: gui::Gui,
+    pub settings: Settings,
     // Measures GPU time per frame, when the adapter supports timestamps
     pub gpu_timer: Option<stats::GpuTimer>,
     // Per-pass GPU timings, in benchmark mode when timestamps are supported
@@ -79,6 +81,17 @@ impl Engine {
         let surface = instance
             .create_surface(Arc::clone(&window))
             .expect("Failed to create surface");
+        let size = window.inner_size();
+        Self::from_surface(instance, surface, size.width, size.height, benchmark)
+    }
+
+    pub fn from_surface(
+        instance: Instance,
+        surface: Surface<'static>,
+        width: u32,
+        height: u32,
+        benchmark: bool,
+    ) -> Self {
         let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
             &instance,
             Some(&surface),
@@ -97,7 +110,6 @@ impl Engine {
         let gpu_timer = stats::GpuTimer::new(&device, &queue);
         let pass_timer = benchmark.then(|| benchmark::PassTimer::new(&device, &queue)).flatten();
 
-        let size = window.inner_size();
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps.formats[0];
 
@@ -105,8 +117,8 @@ impl Engine {
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
-            width: size.width,
-            height: size.height,
+            width: width,
+            height: height,
             present_mode: if benchmark && surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
                 wgpu::PresentMode::Immediate
             } else {
@@ -146,11 +158,11 @@ impl Engine {
         );
 
         // Create a depth texture view of the same size as the surface
-        let depth_view = textures::create_depth_view(&device, size.width, size.height);
+        let depth_view = textures::create_depth_view(&device, width, height);
 
         // Create the offscreen scene texture view of the same size as the
         // surface, in the floating point scene format
-        let scene_view = textures::create_scene_view(&device, size.width, size.height);
+        let scene_view = textures::create_scene_view(&device, width, height);
 
         // Describes what bind groups the scene pipeline expects
         let shadows = shadows::Shadows::new(&device, &camera_layout);
@@ -185,16 +197,14 @@ impl Engine {
 
         let world_noise = post.world_noise_bind_group(&device, &world_noise_layout);
 
-        // Create the side menu, drawn straight to the surface
-        let gui = gui::Gui::new(&device, &window, surface_format);
-
         Self {
             world_noise,
             shadows,
             camera_layout,
             device,
             queue,
-            surface,
+            surface: Some(surface),
+            adapter,
             surface_config,
             floor_buffer,
             floor_pipeline,
@@ -204,7 +214,7 @@ impl Engine {
             scene_view,
             scene_pipeline,
             post,
-            gui,
+            settings: Settings::default(),
             gpu_timer,
             pass_timer,
         }
@@ -222,7 +232,9 @@ impl Engine {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.surface_config.width = width;
         self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.surface_config);
+        }
 
         // Recreate the textures sized to the surface
         self.depth_view = textures::create_depth_view(&self.device, width, height);
@@ -251,8 +263,8 @@ impl Engine {
         let mut camera_uniform = camera::camera_uniform(
             &orbit,
             view.model,
-            self.gui.controls.light_angle,
-            &self.gui.shading,
+            self.settings.controls.light_angle,
+            &self.settings.shading,
             aspect,
             offset,
         )
@@ -270,14 +282,14 @@ impl Engine {
             &self.queue,
             &camera_uniform,
             view.floor_origin,
-            self.gui.shading.shadow_strength,
+            self.settings.shading.shadow_strength,
         );
     }
 
     // Record the light's depth pass, if the scene's casters or the light have
     // changed since the map was last drawn
     fn encode_shadow_pass(&self, encoder: &mut wgpu::CommandEncoder, scene: &dyn Scene, scene_id: usize) {
-        if self.gui.shading.shadow_strength <= 0.0 {
+        if self.settings.shading.shadow_strength <= 0.0 {
             return;
         }
         let casters = shadows::Casters {

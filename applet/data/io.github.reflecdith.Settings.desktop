@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=ReflecDith Settings
+Comment=Adjust the live dithered wallpaper
+Type=Application
+Exec=reflecdith-applet --settings
+Icon=preferences-desktop-wallpaper-symbolic
+Categories=Settings;DesktopSettings;
+Terminal=false

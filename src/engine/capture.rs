@@ -99,11 +99,11 @@ impl Engine {
         self.prepare_frame(scene, orbit, aspect_ratio, 0.0);
         self.post.write_uniform(
             queue,
-            &self.gui.palette,
+            &self.settings.palette,
             scale,
-            self.gui.levels,
-            self.gui.bayer_density,
-            self.gui.shared_grid,
+            self.settings.levels,
+            self.settings.bayer_density,
+            self.settings.shared_grid,
         );
 
         // The buffer the image is copied into so the CPU can read it

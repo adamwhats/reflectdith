@@ -1,9 +1,5 @@
 use super::blue_noise;
-use std::{
-    cell::Cell,
-    collections::hash_map::RandomState,
-    hash::{BuildHasher, Hasher},
-};
+use std::cell::Cell;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec3, Vec4};
@@ -13,76 +9,7 @@ use wgpu::{
     RenderPipelineDescriptor, ShaderModule, TextureFormat, TextureView, VertexState, util::DeviceExt,
 };
 
-// The tones the dither chooses between, in linear RGB. Edited from the
-// side menu in gui.rs
-#[derive(Clone, Copy, PartialEq)]
-pub struct Palette {
-    pub dark: [f32; 3],
-    pub light: [f32; 3],
-}
-
-// How many tones the dither quantises to, evenly spaced from the dark colour
-// to the light colour. 2 is just the two colours
-pub const DEFAULT_LEVELS: u32 = 3;
-pub const MAX_LEVELS: u32 = 16;
-pub const DEFAULT_BAYER_DENSITY: f32 = 0.5;
-
-impl Default for Palette {
-    fn default() -> Self {
-        Self {
-            // sRGB #170505 and #685841, stored as linear RGB.
-            dark: [0.008568126, 0.001517635, 0.001517635],
-            light: [0.13843162, 0.09758735, 0.052860647],
-        }
-    }
-}
-
-impl Palette {
-    pub fn random_muted() -> Self {
-        Self::muted_from_seed(RandomState::new().build_hasher().finish())
-    }
-
-    fn muted_from_seed(mut seed: u64) -> Self {
-        let mut unit = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (seed >> 40) as f32 / 16777216.
-        };
-        let hue = unit();
-        // Mix related hues with occasional split-complementary pairings.
-        let light_hue = hue
-            + if unit() < 0.6 {
-                (unit() - 0.5) / 3.
-            } else {
-                1. / 3. + unit() / 3.
-            };
-        Self {
-            dark: muted_hsl(hue, 0.10 + unit() * 0.28, 0.06 + unit() * 0.14),
-            light: muted_hsl(light_hue, 0.10 + unit() * 0.28, 0.50 + unit() * 0.22),
-        }
-    }
-}
-
-fn muted_hsl(hue: f32, saturation: f32, lightness: f32) -> [f32; 3] {
-    let chroma = (1. - (2. * lightness - 1.).abs()) * saturation;
-    let h = hue.rem_euclid(1.) * 6.;
-    let x = chroma * (1. - (h % 2. - 1.).abs());
-    let rgb = match h as u32 {
-        0 => [chroma, x, 0.],
-        1 => [x, chroma, 0.],
-        2 => [0., chroma, x],
-        3 => [0., x, chroma],
-        4 => [x, 0., chroma],
-        _ => [chroma, 0., x],
-    };
-    rgb.map(|channel| {
-        let srgb = channel + lightness - chroma * 0.5;
-        if srgb <= 0.04045 {
-            srgb / 12.92
-        } else {
-            ((srgb + 0.055) / 1.055).powf(2.4)
-        }
-    })
-}
+pub use reflecdith_control::settings::{DEFAULT_BAYER_DENSITY, DEFAULT_LEVELS, MAX_LEVELS, Palette};
 
 // CPU-side mirror of the shader's post uniform. The field order and layout
 // must match the WGSL struct

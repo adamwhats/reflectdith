@@ -2,3 +2,5 @@
 /screenshots
 
 __pycache__/
+/applet/target
+/crates/control/target

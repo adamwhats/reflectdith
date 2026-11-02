@@ -44,6 +44,8 @@ impl Default for SceneView {
 }
 
 pub trait Scene {
+    fn reset(&mut self) {}
+
     // Whether the engine draws the floor, and shows its menu settings
     fn has_floor(&self) -> bool {
         true
@@ -56,6 +58,11 @@ pub trait Scene {
 
     // Called when the scene becomes the one shown, including the first time
     fn activate(&mut self, _ctx: &SceneCtx) {}
+
+    // Resize simulation space to the fixed wallpaper camera without respawning.
+    fn fit_wallpaper(&mut self, orbit: Orbit, _aspect: f32) -> Orbit {
+        orbit
+    }
 
     // Advance the scene by dt seconds. Runs every frame while it is shown,
     // after the menu, so settings edited this frame apply straight away
@@ -84,7 +91,8 @@ pub trait Scene {
     }
 
     // The scene's own section of the side menu, under the View row
-    fn ui(&mut self, _ui: &mut egui::Ui) {}
+    fn apply_settings(&mut self, _settings: &reflecdith_control::settings::SceneSettings) {}
+    fn ui(&mut self, _ui: &mut egui::Ui, _settings: &mut reflecdith_control::settings::SceneSettings) {}
 }
 
 // Builds a scene the first time it is shown
@@ -142,6 +150,12 @@ impl Scenes {
             slot.scene = Some(scene);
         }
         self.active_mut().activate(ctx);
+    }
+
+    pub fn reset(&mut self, id: usize) {
+        if let Some(scene) = self.slots[id].scene.as_deref_mut() {
+            scene.reset();
+        }
     }
 
     // The scene being shown. Panics before the first activate

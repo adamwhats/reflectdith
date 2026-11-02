@@ -19,36 +19,6 @@ const VALUE_WIDTH: f32 = 70.0;
 // controls of all sections line up. Fits the longest label, "Bayer density"
 const LABEL_WIDTH: f32 = 110.0;
 
-// The rotation of the light about the world Y axis. The angle advances at its
-// speed every frame
-pub struct LightControls {
-    // Angle in degrees
-    pub light_angle: f32,
-    // Speed in degrees per second
-    pub light_speed: f32,
-}
-
-impl Default for LightControls {
-    fn default() -> Self {
-        Self {
-            light_angle: 0.0,
-            light_speed: camera::LIGHT_ROT_VEL.to_degrees(),
-        }
-    }
-}
-
-impl LightControls {
-    pub fn reset_light(&mut self) {
-        self.light_angle = 0.;
-        self.light_speed = 0.;
-    }
-
-    // Move the angle on by dt seconds, wrapped to 0 to 360
-    pub fn advance(&mut self, dt: f32) {
-        self.light_angle = (self.light_angle + self.light_speed * dt).rem_euclid(360.0);
-    }
-}
-
 // The side menu, drawn with egui on top of the dithered image
 pub struct Gui {
     // egui's UI state, carried between frames
@@ -59,20 +29,6 @@ pub struct Gui {
     renderer: Renderer,
     // Textures egui released last frame, freed once that frame is submitted
     textures_to_free: Vec<TextureId>,
-    // The colours being edited
-    pub palette: Palette,
-    // The number of tones the dither quantises to, from the dark colour to the
-    // light colour
-    pub levels: u32,
-    pub bayer_density: f32,
-    pub shared_grid: bool,
-    // Light animation state; the menu exposes its speed
-    pub controls: LightControls,
-    // The specular and floor settings being edited
-    pub shading: camera::Shading,
-    // Index of the scene picked in the View row. The caller switches scenes
-    // when it differs from the active one
-    pub selected_scene: usize,
     // Width in physical pixels of the strip on the left of the window which
     // the menu covers, as of the last run
     pub menu_width_px: f32,
@@ -193,13 +149,6 @@ impl Gui {
             state,
             renderer,
             textures_to_free: Vec::new(),
-            palette: Palette::default(),
-            levels: post::DEFAULT_LEVELS,
-            bayer_density: post::DEFAULT_BAYER_DENSITY,
-            shared_grid: true,
-            controls: LightControls::default(),
-            shading: camera::Shading::default(),
-            selected_scene: 0,
             menu_width_px: 0.0,
             capture_requested: false,
             status: String::new(),
@@ -218,15 +167,22 @@ impl Gui {
     // Lay out the menu for this frame, which may edit the palette and the
     // active scene's settings. scene_names lists every scene, for the View
     // row. Returns what egui wants drawn, to be passed to draw
-    pub fn run(&mut self, window: &Window, scene_names: &[&str], scene: &mut dyn Scene) -> FullOutput {
+    pub fn run(
+        &mut self,
+        window: &Window,
+        scene_names: &[&str],
+        scene: &mut dyn Scene,
+        settings: &mut reflecdith_control::Settings,
+    ) -> FullOutput {
         let input = self.state.take_egui_input(window);
-        let palette = &mut self.palette;
-        let levels = &mut self.levels;
-        let bayer_density = &mut self.bayer_density;
-        let shared_grid = &mut self.shared_grid;
-        let controls = &mut self.controls;
-        let shading = &mut self.shading;
-        let selected_scene = &mut self.selected_scene;
+        let scene_settings = &mut settings.scene;
+        let palette = &mut settings.palette;
+        let levels = &mut settings.levels;
+        let bayer_density = &mut settings.bayer_density;
+        let shared_grid = &mut settings.shared_grid;
+        let controls = &mut settings.controls;
+        let shading = &mut settings.shading;
+        let selected_scene = &mut settings.selected_scene;
         let has_floor = scene.has_floor();
         let capture_requested = &mut self.capture_requested;
         let status = &self.status;
@@ -260,7 +216,7 @@ impl Gui {
                             }
                         });
                         // The active scene's own settings
-                        scene.ui(ui);
+                        scene.ui(ui, scene_settings);
                         ui.separator();
 
                         ui.heading("Lighting");

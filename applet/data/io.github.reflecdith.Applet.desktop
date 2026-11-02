@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=ReflecDith
+Comment=Control the live dithered wallpaper
+Type=Application
+Exec=reflecdith-applet
+Icon=preferences-desktop-wallpaper-symbolic
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+X-OverflowPriority=10

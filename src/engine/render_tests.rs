@@ -6,7 +6,7 @@ use wgpu::util::DeviceExt;
 
 const SIZE: u32 = 64;
 
-fn gpu() -> (wgpu::Device, wgpu::Queue) {
+pub(crate) fn gpu() -> (wgpu::Device, wgpu::Queue) {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(&instance, None)).unwrap();
     pollster::block_on(adapter.request_device(&Default::default())).unwrap()
@@ -29,7 +29,12 @@ fn target(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::Texture {
     })
 }
 
-fn read_pixels(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, bytes_per_pixel: u32) -> Vec<u8> {
+pub(crate) fn read_pixels(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    bytes_per_pixel: u32,
+) -> Vec<u8> {
     let row = SIZE * bytes_per_pixel;
     assert_eq!(row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, 0);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {

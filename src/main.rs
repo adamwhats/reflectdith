@@ -2,6 +2,8 @@ mod app;
 mod cli;
 mod engine;
 mod scenes;
+#[cfg(target_os = "linux")]
+mod wallpaper;
 
 use std::time::{Duration, Instant};
 
@@ -12,6 +14,35 @@ use scenes::{Scenes, boids::Boids, mesh::MeshScene, robot};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = cli::Cli::parse();
+    if let Some(cli::Command::Ctl { command }) = &cli.command {
+        use reflecdith_control::ipc;
+        if matches!(command, cli::Control::Stop) {
+            ipc::stop()?;
+            return Ok(());
+        }
+        let state = match command {
+            cli::Control::Stop => unreachable!(),
+            cli::Control::Get => ipc::get_state()?,
+            cli::Control::Set { json } => ipc::apply_patch(json)?,
+            cli::Control::ResetBoids => ipc::reset_boids()?,
+            cli::Control::Pause => ipc::apply_patch(r#"{"paused":true}"#)?,
+            cli::Control::Resume => ipc::apply_patch(r#"{"paused":false}"#)?,
+            cli::Control::Random => ipc::apply_patch(&format!(
+                r#"{{"palette":{}}}"#,
+                serde_json::to_string(&reflecdith_control::settings::Palette::random_muted())?
+            ))?,
+            cli::Control::Swap => {
+                let mut palette = ipc::get_state()?.settings.palette;
+                std::mem::swap(&mut palette.dark, &mut palette.light);
+                ipc::apply_patch(&format!(r#"{{"palette":{}}}"#, serde_json::to_string(&palette)?))?
+            }
+        };
+        println!("{}", serde_json::to_string_pretty(&state)?);
+        return Ok(());
+    }
+    if cli.wallpaper && (cli.benchmark_frames.is_some() || cli.capture_after.is_some()) {
+        return Err("Wallpaper mode does not support benchmark or timed capture; use the ordinary viewer".into());
+    }
     let options = &cli.robot;
     let initial_robot = if let Some(path) = &options.urdf {
         let xml = std::fs::read_to_string(path)?;
@@ -88,8 +119,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    // Create the event loop
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
 
     // Every scene the View row offers, in order. Each is built the first time
     // it is shown
@@ -111,6 +140,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mesh
     };
 
+    if cli.wallpaper || cli.list_outputs {
+        #[cfg(target_os = "linux")]
+        return wallpaper::run(cli, scenes, initial_scene);
+        #[cfg(not(target_os = "linux"))]
+        return Err("Wallpaper mode requires Linux and Wayland".into());
+    }
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
     // Create the application handler, and run the event loop with it
     let mut app = app::App::new(cli, scenes, initial_scene);
     event_loop.run_app(&mut app).expect("Failed to run event loop");
