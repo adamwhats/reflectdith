@@ -44,7 +44,10 @@ if [[ "$mode" == run && -z "$container" && "$image_explicit" == false ]]; then c
 watch=true
 for argument in "$@"; do
   case "$argument" in
-    --list-topics|--probe-ros|--probe-ros=*|--capture-after|--capture-after=*|--benchmark-frames|--benchmark-frames=*|--check-robot)
+    --wallpaper)
+      echo "Robot mode is viewer-only; run reflecdith --wallpaper separately for Boids." >&2
+      exit 2 ;;
+    --list-outputs|--list-topics|--probe-ros|--probe-ros=*|--capture-after|--capture-after=*|--benchmark-frames|--benchmark-frames=*|--check-robot)
       watch=false ;;
   esac
 done
@@ -128,9 +131,10 @@ if [[ "$mode" == run ]]; then
       args+=(--env XAUTHORITY=/tmp/viewer.xauth --volume "$XAUTHORITY:/tmp/viewer.xauth:ro")
     fi
   fi
-  if [[ -n "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$WAYLAND_DISPLAY" ]]; then
+  runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if [[ -n "${WAYLAND_DISPLAY:-}" && -S "$runtime_dir/$WAYLAND_DISPLAY" ]]; then
     args+=(--env XDG_RUNTIME_DIR=/tmp/viewer-runtime --env WAYLAND_DISPLAY=wayland-viewer
-      --volume "${XDG_RUNTIME_DIR}/$WAYLAND_DISPLAY:/tmp/viewer-runtime/wayland-viewer:ro")
+      --volume "$runtime_dir/$WAYLAND_DISPLAY:/tmp/viewer-runtime/wayland-viewer:ro")
   fi
 fi
 # Capture AMENT_PREFIX_PATH before sourcing: selected robot overlays contain mesh packages.

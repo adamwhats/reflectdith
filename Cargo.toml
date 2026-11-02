@@ -8,6 +8,8 @@ default = []
 ros2 = ["dep:rclrs"]
 
 [dependencies]
+reflecdith-control = { path = "crates/control" }
+serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 urdf-rs = "0.10"
 mesh-loader = "0.1.13"
@@ -25,6 +27,14 @@ wgpu = "30.0.1"
 winit = "0.30.13"
 rand = "0.10.3"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay-client-toolkit = "0.19"
+wayland-client = { version = "0.31", features = ["system"] }
+raw-window-handle = "0.6"
+calloop = "0.13"
+calloop-wayland-source = "0.3"
+signal-hook = "0.3"
+
 # The launcher runs development builds. Optimize every dependency, including
 # wgpu, its Vulkan layer, glam and the ROS bindings, while retaining debug
 # symbols. The first build takes longer; application rebuilds are unaffected.
@@ -33,3 +43,8 @@ opt-level = 2
 
 [profile.dev.package.reflecdith]
 opt-level = 1
+
+[workspace]
+members = ["crates/control"]
+exclude = ["applet"]
+resolver = "3"

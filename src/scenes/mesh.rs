@@ -8,7 +8,23 @@ use crate::engine::{camera, gui, vertices};
 
 // Directory the models are listed from, and the name (without extension) of
 // the one shown at startup
-const MODEL_DIR: &str = "models";
+fn model_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("REFLECDITH_MODEL_DIR") {
+        return path.into();
+    }
+    if Path::new("models").is_dir() {
+        return "models".into();
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(bin) = executable.parent() {
+            let installed = bin.join("../share/reflecdith/models");
+            if installed.is_dir() {
+                return installed;
+            }
+        }
+    }
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("models")
+}
 const DEFAULT_MODEL: &str = "utah_teapot_low";
 
 pub struct MeshScene {
@@ -36,7 +52,11 @@ impl MeshScene {
     // Find the available models and load the default one, falling back to the
     // first if the default isn't there
     pub fn new(ctx: &SceneCtx) -> Self {
-        let models = vertices::list_models(MODEL_DIR);
+        let models = vertices::list_models(model_dir().to_str().expect("Model directory is not UTF-8"));
+        assert!(
+            !models.is_empty(),
+            "No STL models found; set REFLECDITH_MODEL_DIR to the models directory"
+        );
         let loaded_model = models
             .iter()
             .position(|path| path.file_stem().is_some_and(|stem| stem == DEFAULT_MODEL))
@@ -91,7 +111,16 @@ impl Scene for MeshScene {
         self.mesh.draw_shadow(pass);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui) {
+    fn apply_settings(&mut self, settings: &reflecdith_control::settings::SceneSettings) {
+        self.speed = settings.mesh_speed;
+        if let Some(name) = &settings.mesh_model {
+            if let Some(index) = self.models.iter().position(|path| model_name(path) == *name) {
+                self.selected_model = index;
+            }
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, settings: &mut reflecdith_control::settings::SceneSettings) {
         let models = &self.models;
         let selected_model = &mut self.selected_model;
         gui::combo_row(ui, "Mesh", "model_select", model_name(&models[*selected_model]), |ui| {
@@ -99,6 +128,7 @@ impl Scene for MeshScene {
                 ui.selectable_value(selected_model, index, model_name(model));
             }
         });
-        gui::value_slider(ui, "Spin", &mut self.speed, -180.0..=180.0, 0, "°/s");
+        settings.mesh_model = Some(model_name(&models[*selected_model]));
+        gui::value_slider_step(ui, "Spin", &mut settings.mesh_speed, -180.0..=180.0, 0, "°/s", 10.);
     }
 }

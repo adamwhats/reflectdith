@@ -6,6 +6,20 @@ use crate::scenes::robot;
 #[derive(Parser, Clone, Debug)]
 #[command(about = "Dithered mesh / ROS 2 robot viewer")]
 pub struct Cli {
+    /// Render behind desktop windows using Wayland layer-shell.
+    #[arg(long)]
+    pub wallpaper: bool,
+    /// Limit wallpaper to a Wayland output, e.g. DP-1 (defaults to all outputs).
+    #[arg(long, requires = "wallpaper")]
+    pub output: Option<String>,
+    /// List Wayland outputs and exit.
+    #[arg(long, conflicts_with_all = ["wallpaper", "output"])]
+    pub list_outputs: bool,
+    /// Wallpaper frame cap (otherwise use the saved value, initially 30).
+    #[arg(long, requires = "wallpaper", value_parser = clap::value_parser!(u32).range(1..=120))]
+    pub fps: Option<u32>,
+    #[command(subcommand)]
+    pub command: Option<Command>,
     #[command(flatten)]
     pub robot: robot::Options,
     /// Start with the controls hidden; press Tab to show them.
@@ -20,4 +34,29 @@ pub struct Cli {
     /// Measure N frames after 120 warmup frames, waiting for the GPU each frame, then exit.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     pub benchmark_frames: Option<u32>,
+}
+
+#[derive(clap::Subcommand, Clone, Debug)]
+pub enum Command {
+    /// Control a running wallpaper over the session bus.
+    Ctl {
+        #[command(subcommand)]
+        command: Control,
+    },
+}
+
+#[derive(clap::Subcommand, Clone, Debug)]
+pub enum Control {
+    Get,
+    /// Apply a JSON object patch, e.g. '{"levels":4}'.
+    Set {
+        json: String,
+    },
+    Stop,
+    Pause,
+    Resume,
+    Random,
+    Swap,
+    /// Restore boid defaults and restart the flock.
+    ResetBoids,
 }

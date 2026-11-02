@@ -11,8 +11,6 @@ use wgpu::{
 // Constants
 // Default rotation speeds in radians per second
 pub const ROT_VEL: f32 = 0.5;
-// Light orbits the opposite way to the model
-pub const LIGHT_ROT_VEL: f32 = -0.4;
 // Meshes are loaded centred on the origin and scaled to fit a unit sphere
 const EYE: Vec3 = Vec3::new(0.0, 1.0, 2.0);
 // Radians of orbit per pixel dragged
@@ -69,37 +67,7 @@ pub struct CameraUniform {
     pub fog: Vec4,
 }
 
-// How the surfaces are shaded, edited from the side menu
-#[derive(Clone, Copy)]
-pub struct Shading {
-    // How tight the specular highlight is, higher is smaller and sharper
-    pub shininess: f32,
-    // How bright the specular highlight is
-    pub specular_strength: f32,
-    // The grey level the floor reflects
-    pub floor_brightness: f32,
-    // Distances from the centre in world units where the floor starts and
-    // finishes fading to black
-    pub floor_fade_start: f32,
-    pub floor_fade_end: f32,
-    pub floor_noise_density: f32,
-    // How dark shadows are, from 0 (off) to 1 (fully shadowed)
-    pub shadow_strength: f32,
-}
-
-impl Default for Shading {
-    fn default() -> Self {
-        Self {
-            shininess: 32.0,
-            specular_strength: 1.5,
-            floor_brightness: 0.5,
-            floor_fade_start: 0.6,
-            floor_fade_end: 2.5,
-            floor_noise_density: 128.0,
-            shadow_strength: 1.0,
-        }
-    }
-}
+pub use reflecdith_control::settings::Shading;
 
 impl CameraUniform {
     // Follow the footprint with the observer. Lighting stays in the fixed
@@ -157,6 +125,7 @@ pub struct Orbit {
     // Angle above the XZ plane in radians
     pitch: f32,
     distance: f32,
+    orthographic: bool,
 }
 
 // Starts at the default eye position
@@ -166,11 +135,21 @@ impl Default for Orbit {
             yaw: 0.0,
             pitch: (EYE.y / EYE.length()).asin(),
             distance: EYE.length(),
+            orthographic: false,
         }
     }
 }
 
 impl Orbit {
+    pub fn from_settings(settings: &reflecdith_control::settings::CameraSettings) -> Self {
+        Self {
+            yaw: settings.yaw.to_radians(),
+            pitch: settings.pitch.to_radians(),
+            distance: settings.distance,
+            orthographic: false,
+        }
+    }
+
     pub fn fit_robot(&mut self) {
         self.distance = 3.5;
     }
@@ -179,6 +158,47 @@ impl Orbit {
     // the view's height
     pub fn fit_sphere(&mut self, radius: f32) {
         self.distance = (radius / (FOV_Y / 2.0).sin()).clamp(MIN_DISTANCE, MAX_DISTANCE);
+    }
+
+    // Preserve the centre-plane scale while removing depth-dependent shrinkage.
+    pub fn orthographic(mut self) -> Self {
+        self.orthographic = true;
+        self
+    }
+
+    // Inscribe a world-axis flight box in the fixed camera's frustum. Fit
+    // height/depth first, then expand its width across the desktop.
+    // Include the complete body at every corner, not just each bird's centre.
+    pub fn visible_box(&self, aspect: f32, padding: f32) -> Vec3 {
+        const EDGE: f32 = 0.97;
+        let back = self.eye().normalize();
+        let right = Vec3::Y.cross(back).normalize();
+        let up = back.cross(right);
+        let tan_y = (FOV_Y / 2.).tan() * EDGE;
+        let tan_x = tan_y * aspect.max(f32::EPSILON);
+        let depth = if self.orthographic { Vec3::ZERO } else { back };
+        let planes = [
+            ((depth * tan_x + right).abs(), self.distance * tan_x),
+            ((depth * tan_x - right).abs(), self.distance * tan_x),
+            ((depth * tan_y + up).abs(), self.distance * tan_y),
+            ((depth * tan_y - up).abs(), self.distance * tan_y),
+            (back.abs(), self.distance - NEAR * 1.01),
+        ];
+        let shape = Vec3::new(0., 1., 1.);
+        let scale = planes
+            .iter()
+            .filter(|(n, _)| n.dot(shape) > 1e-6)
+            .map(|(n, limit)| (limit - padding * n.element_sum()) / n.dot(shape))
+            .fold(f32::INFINITY, f32::min)
+            .max(0.001);
+        let mut extent = shape * scale;
+        extent.x = planes
+            .iter()
+            .filter(|(n, _)| n.x > 1e-6)
+            .map(|(n, limit)| (limit - padding * n.element_sum() - n.y * extent.y - n.z * extent.z) / n.x)
+            .fold(f32::INFINITY, f32::min)
+            .max(extent.x);
+        extent
     }
 
     // Where the camera is in world space
@@ -244,7 +264,14 @@ pub fn camera_uniform(
     let view = look_at_mat4(eye, Vec3::ZERO, Vec3::Y);
 
     // Camera intrinsics
-    let projection = directx::perspective(FOV_Y, aspect_ratio, NEAR, FAR);
+    let far = FAR.max(orbit.distance * 10.);
+    let projection = if orbit.orthographic {
+        let half_y = orbit.distance * (FOV_Y / 2.).tan();
+        let half_x = half_y * aspect_ratio;
+        directx::orthographic(-half_x, half_x, -half_y, half_y, NEAR, far)
+    } else {
+        directx::perspective(FOV_Y, aspect_ratio, NEAR, far)
+    };
 
     // Shift in clip space, after the projection. A translation there adds to
     // x in proportion to w, which is a constant shift once divided by w
@@ -272,6 +299,59 @@ pub fn camera_uniform(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flight_box_fills_wide_desktop_without_moving_camera_or_clipping() {
+        let mut orbit = Orbit::default();
+        orbit.fit_sphere(3.);
+        let orbit = orbit.orthographic();
+        let distance = orbit.distance;
+        let single = orbit.visible_box(16. / 9., 0.3);
+        let wide = orbit.visible_box(32. / 9., 0.3);
+        assert!(wide.x > single.x * 1.9);
+        assert!(wide.x > wide.y * 3.);
+        assert_eq!(orbit.distance, distance);
+        for aspect in [0.5, 16. / 9., 32. / 9.] {
+            let extent = orbit.visible_box(aspect, 0.3) + Vec3::splat(0.3);
+            let camera = camera_uniform(&orbit, Mat4::IDENTITY, 0., &Shading::default(), aspect, 0.);
+            let mut edge_x = 0_f32;
+            let mut edge_y = 0_f32;
+            for x in [-extent.x, extent.x] {
+                for y in [-extent.y, extent.y] {
+                    for z in [-extent.z, extent.z] {
+                        let p = camera.view_proj.project_point3(Vec3::new(x, y, z));
+                        assert!(p.x.abs() <= 0.97001 && p.y.abs() <= 0.97001);
+                        assert!((0.0..=1.0).contains(&p.z));
+                        edge_x = edge_x.max(p.x.abs());
+                        edge_y = edge_y.max(p.y.abs());
+                    }
+                }
+            }
+            assert!(edge_x > 0.969 && edge_y > 0.969);
+        }
+    }
+
+    #[test]
+    fn wallpaper_side_walls_stay_near_screen_edges_at_every_depth() {
+        let mut original = Orbit::default();
+        original.fit_sphere(3.);
+        let orbit = original.orthographic();
+        let aspect = 32. / 9.;
+        let extent = orbit.visible_box(aspect, 0.3);
+        let camera = camera_uniform(&orbit, Mat4::IDENTITY, 0., &Shading::default(), aspect, 0.);
+        let mut projected = Vec::new();
+        for z in [-extent.z, 0., extent.z] {
+            let p = camera.view_proj.project_point3(Vec3::new(extent.x, 0., z));
+            assert!(p.x > 0.90 && p.x < 0.97);
+            projected.push(p.x);
+        }
+        assert!((projected[0] - projected[2]).abs() < 1e-6);
+        let perspective = camera_uniform(&original, Mat4::IDENTITY, 0., &Shading::default(), aspect, 0.);
+        let point = Vec3::new(1., 0., 0.);
+        assert!(
+            (camera.view_proj.project_point3(point).x - perspective.view_proj.project_point3(point).x).abs() < 1e-6
+        );
+    }
 
     #[test]
     fn orbit_stays_above_floor_after_drag_zoom_and_robot_follow() {

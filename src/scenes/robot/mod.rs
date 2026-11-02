@@ -265,7 +265,7 @@ impl Scene for RobotScene {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui) {
+    fn ui(&mut self, ui: &mut egui::Ui, _settings: &mut reflecdith_control::settings::SceneSettings) {
         if let Some(topics) = &mut self.topics {
             topics.ui(ui);
         }

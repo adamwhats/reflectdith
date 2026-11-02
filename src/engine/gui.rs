@@ -19,36 +19,6 @@ const VALUE_WIDTH: f32 = 70.0;
 // controls of all sections line up. Fits the longest label, "Bayer density"
 const LABEL_WIDTH: f32 = 110.0;
 
-// The rotation of the light about the world Y axis. The angle advances at its
-// speed every frame
-pub struct LightControls {
-    // Angle in degrees
-    pub light_angle: f32,
-    // Speed in degrees per second
-    pub light_speed: f32,
-}
-
-impl Default for LightControls {
-    fn default() -> Self {
-        Self {
-            light_angle: 0.0,
-            light_speed: camera::LIGHT_ROT_VEL.to_degrees(),
-        }
-    }
-}
-
-impl LightControls {
-    pub fn reset_light(&mut self) {
-        self.light_angle = 0.;
-        self.light_speed = 0.;
-    }
-
-    // Move the angle on by dt seconds, wrapped to 0 to 360
-    pub fn advance(&mut self, dt: f32) {
-        self.light_angle = (self.light_angle + self.light_speed * dt).rem_euclid(360.0);
-    }
-}
-
 // The side menu, drawn with egui on top of the dithered image
 pub struct Gui {
     // egui's UI state, carried between frames
@@ -59,20 +29,6 @@ pub struct Gui {
     renderer: Renderer,
     // Textures egui released last frame, freed once that frame is submitted
     textures_to_free: Vec<TextureId>,
-    // The colours being edited
-    pub palette: Palette,
-    // The number of tones the dither quantises to, from the dark colour to the
-    // light colour
-    pub levels: u32,
-    pub bayer_density: f32,
-    pub shared_grid: bool,
-    // Light animation state; the menu exposes its speed
-    pub controls: LightControls,
-    // The specular and floor settings being edited
-    pub shading: camera::Shading,
-    // Index of the scene picked in the View row. The caller switches scenes
-    // when it differs from the active one
-    pub selected_scene: usize,
     // Width in physical pixels of the strip on the left of the window which
     // the menu covers, as of the last run
     pub menu_width_px: f32,
@@ -110,12 +66,33 @@ pub fn value_slider<N: egui::emath::Numeric>(
     decimals: usize,
     suffix: &str,
 ) {
+    value_slider_step(
+        ui,
+        label,
+        value,
+        range,
+        decimals,
+        suffix,
+        10_f64.powi(-(decimals as i32)),
+    );
+}
+
+pub fn value_slider_step<N: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut N,
+    range: RangeInclusive<N>,
+    decimals: usize,
+    suffix: &str,
+    step: f64,
+) {
     labeled_row(ui, label, |ui| {
         ui.spacing_mut().slider_width = ui.available_width() - VALUE_WIDTH - ui.spacing().item_spacing.x;
-        ui.add(egui::Slider::new(value, range.clone()).show_value(false));
+        ui.add(egui::Slider::new(value, range.clone()).step_by(step).show_value(false));
         ui.add_sized(
             [VALUE_WIDTH, ui.spacing().interact_size.y],
             egui::DragValue::new(value)
+                .speed(step)
                 .range(range)
                 .fixed_decimals(decimals)
                 .suffix(suffix),
@@ -193,13 +170,6 @@ impl Gui {
             state,
             renderer,
             textures_to_free: Vec::new(),
-            palette: Palette::default(),
-            levels: post::DEFAULT_LEVELS,
-            bayer_density: post::DEFAULT_BAYER_DENSITY,
-            shared_grid: true,
-            controls: LightControls::default(),
-            shading: camera::Shading::default(),
-            selected_scene: 0,
             menu_width_px: 0.0,
             capture_requested: false,
             status: String::new(),
@@ -218,15 +188,23 @@ impl Gui {
     // Lay out the menu for this frame, which may edit the palette and the
     // active scene's settings. scene_names lists every scene, for the View
     // row. Returns what egui wants drawn, to be passed to draw
-    pub fn run(&mut self, window: &Window, scene_names: &[&str], scene: &mut dyn Scene) -> FullOutput {
+    pub fn run(
+        &mut self,
+        window: &Window,
+        scene_names: &[&str],
+        scene: &mut dyn Scene,
+        settings: &mut reflecdith_control::Settings,
+        fps_limit: &mut Option<u32>,
+    ) -> FullOutput {
         let input = self.state.take_egui_input(window);
-        let palette = &mut self.palette;
-        let levels = &mut self.levels;
-        let bayer_density = &mut self.bayer_density;
-        let shared_grid = &mut self.shared_grid;
-        let controls = &mut self.controls;
-        let shading = &mut self.shading;
-        let selected_scene = &mut self.selected_scene;
+        let scene_settings = &mut settings.scene;
+        let palette = &mut settings.palette;
+        let levels = &mut settings.levels;
+        let bayer_density = &mut settings.bayer_density;
+        let shared_grid = &mut settings.shared_grid;
+        let controls = &mut settings.controls;
+        let shading = &mut settings.shading;
+        let selected_scene = &mut settings.selected_scene;
         let has_floor = scene.has_floor();
         let capture_requested = &mut self.capture_requested;
         let status = &self.status;
@@ -259,15 +237,20 @@ impl Gui {
                                 ui.selectable_value(selected_scene, index, *name);
                             }
                         });
+                        labeled_row(ui, "Frame rate", |ui| {
+                            ui.selectable_value(fps_limit, Some(30), "30");
+                            ui.selectable_value(fps_limit, Some(60), "60");
+                            ui.selectable_value(fps_limit, None, "Uncapped");
+                        });
                         // The active scene's own settings
-                        scene.ui(ui);
+                        scene.ui(ui, scene_settings);
                         ui.separator();
 
                         ui.heading("Lighting");
-                        value_slider(ui, "Shadows", &mut shading.shadow_strength, 0.0..=1.0, 2, "");
-                        value_slider(ui, "Rotation", &mut controls.light_speed, -180.0..=180.0, 0, "°/s");
+                        value_slider_step(ui, "Shadows", &mut shading.shadow_strength, 0.0..=1.0, 2, "", 0.05);
+                        value_slider_step(ui, "Rotation", &mut controls.light_speed, -180.0..=180.0, 0, "°/s", 5.);
                         value_slider(ui, "Shininess", &mut shading.shininess, 1.0..=64.0, 0, "");
-                        value_slider(ui, "Specular", &mut shading.specular_strength, 0.0..=3.0, 2, "");
+                        value_slider_step(ui, "Specular", &mut shading.specular_strength, 0.0..=3.0, 2, "", 0.05);
                         if ui.button("Reset lighting").clicked() {
                             controls.reset_light();
                             let defaults = camera::Shading::default();
@@ -282,7 +265,7 @@ impl Gui {
                             // Lit floor peaks at about 0.68 x brightness at the
                             // centre, so the range runs
                             // past 1.0 to reach the light tone there
-                            value_slider(ui, "Brightness", &mut shading.floor_brightness, 0.0..=2.0, 2, "");
+                            value_slider_step(ui, "Brightness", &mut shading.floor_brightness, 0.0..=2.0, 2, "", 0.05);
                             value_slider(ui, "Fade start", &mut shading.floor_fade_start, 0.0..=6.0, 1, "");
                             value_slider(
                                 ui,
@@ -304,15 +287,21 @@ impl Gui {
                         ui.heading("Dithering");
                         checkbox_row(ui, "Shared grid", shared_grid);
                         value_slider(ui, "Levels", levels, 2..=post::MAX_LEVELS, 0, "");
-                        value_slider(ui, "Bayer density", bayer_density, 0.125..=1.0, 2, "×");
+                        let mut cell_size = post::bayer_cell_size(*bayer_density);
+                        let old_size = cell_size;
+                        value_slider(ui, "Bayer cell", &mut cell_size, 1..=8, 0, " px");
+                        if cell_size != old_size {
+                            *bayer_density = 1. / cell_size as f32;
+                        }
                         if has_floor {
-                            value_slider(
+                            value_slider_step(
                                 ui,
                                 "Floor density",
                                 &mut shading.floor_noise_density,
                                 16.0..=256.0,
                                 0,
                                 "",
+                                16.,
                             );
                         }
                         if ui.button("Reset dithering").clicked() {

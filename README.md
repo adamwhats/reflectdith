@@ -14,6 +14,22 @@ Drag to orbit, scroll to zoom. Press **Tab** to hide/show the controls;
 `--hide-gui` starts with a full-window view. Dithering defaults to three levels. The existing palette, shading, and screenshot
 controls also work for robots. Robot mode omits the teapot model controls.
 
+## Wayland live wallpaper / COSMIC applet
+
+```sh
+cargo run -- --list-outputs
+cargo run -- --wallpaper --fps 30
+# From another terminal, tweak the running wallpaper:
+cargo run -- ctl set '{"selected_scene":1,"levels":4}'
+cargo run -- ctl pause
+cargo run -- ctl stop
+```
+
+Boids span the monitor layout as one flock. Mesh and Robot remain viewer-only. Use `--output DP-1` to restrict the wallpaper to one display. A separate
+COSMIC panel applet and standalone settings window provide live controls,
+including simulation speed for slow motion. See [wallpaper setup and controls](docs/wallpaper.md) for building,
+installation, saved settings, and current limitations.
+
 ## ROS 2 prototype (Jazzy)
 
 The viewer uses **rclrs directly**, with subscriptions on a background thread.
@@ -148,7 +164,12 @@ contrasting hues with readable brightness contrast. **Swap colours** exchanges t
 buttons affect only their own section. The camera keeps its orbit and zoom relative to the followed footprint.
 Rotation can reach ground level below the model centre; camera height stays just above the floor, even when zooming.
 
-Normal viewing is capped at **60 FPS**. Benchmark runs remain uncapped.
+The windowed viewer offers **30 / 60 / Uncapped FPS** controls under Scene (60 FPS by
+default). Wallpaper FPS is controlled separately in the applet. Capped modes keep a
+steady deadline cadence after late wake-ups and skip missed rendering slots;
+benchmarks remain uncapped.
+Uncapped removes the application timer and requests the fastest available
+presentation mode; the compositor and driver can still limit throughput.
 
 ### Run without Docker
 

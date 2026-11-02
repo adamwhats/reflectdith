@@ -25,7 +25,7 @@ fn bayer_rank(x: u32, y: u32) -> u32 {
 // post.rs
 struct Post {
     tones: array<vec4<f32>, 16>,
-    // x is the capture scale, y the number of tones, z the Bayer density, w shared grid
+    // x is the capture scale, y the number of tones, z the integer Bayer cell width, w shared grid
     block: vec4<f32>,
 };
 
@@ -60,12 +60,13 @@ fn fragment_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f3
     // One scene sample for the entire output cell. The silhouette, lighting,
     // shadow and threshold all share this screen-space grid.
     let capture_scale = max(post.block.x, 1.0);
-    let density = clamp(post.block.z, 0.125, 1.0);
-    let bayer_cell = vec2<i32>(floor(frag_pos.xy * density / capture_scale));
+    // Whole-pixel cells avoid phase beats between the Bayer tile and pixel grid.
+    let cell_size = max(post.block.z, 1.0);
+    let bayer_cell = vec2<i32>(floor(frag_pos.xy / (capture_scale * cell_size)));
     let max_texel = vec2<i32>(textureDimensions(scene)) - vec2<i32>(1);
-    let scene_density = select(1.0, density, post.block.w > 0.5);
-    let scene_cell = floor(frag_pos.xy * scene_density / capture_scale);
-    let centre = (scene_cell + vec2<f32>(0.5)) * capture_scale / scene_density;
+    let scene_size = select(1.0, cell_size, post.block.w > 0.5);
+    let scene_cell = floor(frag_pos.xy / (capture_scale * scene_size));
+    let centre = (scene_cell + vec2<f32>(0.5)) * capture_scale * scene_size;
     let coords = clamp(vec2<i32>(floor(centre)), vec2<i32>(0), max_texel);
     let colour = textureLoad(scene, coords, 0);
 
@@ -77,7 +78,7 @@ fn fragment_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f3
     let luminance = pow(min(linear_luminance, 1.0), 1.0 / 2.2);
 
     // Look up this pixel's threshold from the Bayer matrix, which tiles every
-    // 8 pixels in x and y
+    // 8 cells in x and y
     let x = u32(bayer_cell.x) % 8u;
     let y = u32(bayer_cell.y) % 8u;
     let bayer_threshold = (f32(bayer_rank(x, y)) + 0.5) / 64.0;
