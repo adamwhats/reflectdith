@@ -99,8 +99,9 @@ The same binary runs as a COSMIC panel applet when launched without `--settings`
 The popup includes scene selection, Dark/Light colour swatches with COSMIC
 colour pickers (colour plane, hue, hex/RGB input, live preview), random/swap,
 dithering, pause/resume, stop, FPS, boid trails, lighting, floor,
-simulation speed, and advanced flocking settings. Trails and **Reset boids** are
-grouped with the flocking controls under **More settings → Boids**. Reset restores
+simulation speed, and advanced flocking settings. Floor controls appear only when
+the active scene's `has_floor` flag is true. Trails and **Reset boids** are grouped
+with the flocking controls under **More settings → Boids**. Reset restores
 boid defaults and respawns the flock with empty trails, preserving the fitted
 volume, palette, and other wallpaper settings. Camera controls are available
 through the CLI rather than the applet. It shows the current
@@ -162,7 +163,8 @@ instance fails instead of replacing or competing with it. Its interface is
 `io.github.reflecdith.Wallpaper1` at `/io/github/reflecdith/Wallpaper`:
 
 - `GetState() -> JSON`: revision, settings, output names, logical output geometry,
-  whether the current scene spans, and the optional single-output restriction.
+  the active scene's `wallpaper_mode` and `has_floor` flags, and the optional
+  single-output restriction.
 - `ApplyPatch(JSON) -> JSON`: validate/apply and return accepted state.
 - `StateChanged(JSON)`: notification to controllers.
 - `Stop()`: request a clean exit and flush pending settings.

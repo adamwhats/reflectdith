@@ -20,6 +20,9 @@ pub struct State {
     pub target_output: Option<String>,
     #[serde(default)]
     pub wallpaper_mode: WallpaperMode,
+    /// Whether the active scene renders a floor.
+    #[serde(default)]
+    pub has_floor: bool,
 }
 
 /// Scenes explicitly offered by the wallpaper application, with stable IDs.
@@ -58,6 +61,7 @@ impl Store {
                 outputs: Vec::new(),
                 target_output: None,
                 wallpaper_mode: WallpaperMode::None,
+                has_floor: false,
             },
             dirty_since: None,
             stop: false,

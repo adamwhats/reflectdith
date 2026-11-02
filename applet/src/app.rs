@@ -384,38 +384,40 @@ impl cosmic::Application for Applet {
                     0.05,
                     |v| json!({"shading":{"specular_strength":v}}),
                 ));
-                rows.push(slider(
-                    format!("Floor brightness: {:.2}", s.shading.floor_brightness),
-                    s.shading.floor_brightness,
-                    0.,
-                    2.,
-                    0.05,
-                    |v| json!({"shading":{"floor_brightness":v}}),
-                ));
-                rows.push(slider(
-                    format!("Floor density: {:.0}", s.shading.floor_noise_density),
-                    s.shading.floor_noise_density,
-                    16.,
-                    256.,
-                    16.,
-                    |v| json!({"shading":{"floor_noise_density":v}}),
-                ));
-                rows.push(slider(
-                    format!("Floor fade start: {:.1}", s.shading.floor_fade_start),
-                    s.shading.floor_fade_start,
-                    0.,
-                    6.,
-                    0.1,
-                    |v| json!({"shading":{"floor_fade_start":v}}),
-                ));
-                rows.push(slider(
-                    format!("Floor fade end: {:.1}", s.shading.floor_fade_end),
-                    s.shading.floor_fade_end,
-                    0.,
-                    32.,
-                    0.1,
-                    |v| json!({"shading":{"floor_fade_end":v}}),
-                ));
+                if state.has_floor {
+                    rows.push(slider(
+                        format!("Floor brightness: {:.2}", s.shading.floor_brightness),
+                        s.shading.floor_brightness,
+                        0.,
+                        2.,
+                        0.05,
+                        |v| json!({"shading":{"floor_brightness":v}}),
+                    ));
+                    rows.push(slider(
+                        format!("Floor density: {:.0}", s.shading.floor_noise_density),
+                        s.shading.floor_noise_density,
+                        16.,
+                        256.,
+                        16.,
+                        |v| json!({"shading":{"floor_noise_density":v}}),
+                    ));
+                    rows.push(slider(
+                        format!("Floor fade start: {:.1}", s.shading.floor_fade_start),
+                        s.shading.floor_fade_start,
+                        0.,
+                        6.,
+                        0.1,
+                        |v| json!({"shading":{"floor_fade_start":v}}),
+                    ));
+                    rows.push(slider(
+                        format!("Floor fade end: {:.1}", s.shading.floor_fade_end),
+                        s.shading.floor_fade_end,
+                        0.,
+                        32.,
+                        0.1,
+                        |v| json!({"shading":{"floor_fade_end":v}}),
+                    ));
+                }
                 if s.selected_scene == 1 {
                     let b = &s.scene.boids;
                     rows.push(widget::text::heading("Boids").into());

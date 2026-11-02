@@ -144,8 +144,8 @@ pub fn run(cli: Cli, scenes: Scenes) -> Result<(), Box<dyn Error>> {
                 app.reconcile(&compositor, &shell, &qh)?;
             }
             app.prepare_targets(&conn, &instance)?;
-            app.publish_layout(&store);
             app.draw(&qh);
+            app.publish_layout(&store);
         }
         Ok(())
     })();
@@ -396,7 +396,7 @@ impl Wallpaper {
         }
         Ok(())
     }
-    fn publish_layout(&self, shared: &SharedStore) {
+    fn publish_layout(&mut self, shared: &SharedStore) {
         let mut store = shared.lock().unwrap();
         store.state.outputs = self
             .monitors
@@ -420,6 +420,7 @@ impl Wallpaper {
             .join(", ");
         store.state.target_output = self.target.clone();
         store.state.wallpaper_mode = self.scenes.wallpaper_mode(self.settings.selected_scene);
+        store.state.has_floor = self.engine.is_some() && self.scenes.active_mut().has_floor();
     }
     fn draw(&mut self, qh: &QueueHandle<Self>) {
         let desktop = self.desktop();
